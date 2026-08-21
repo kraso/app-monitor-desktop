@@ -1,0 +1,2 @@
+cargo:rustc-link-search=native=E:\Proyectos\Proyectos con Next.js\app-monitor-desktop\src-tauri\target\debug\build\webview2-com-sys-c1d9d8a847dd034b\out\x64
+cargo:rustc-link-lib=advapi32

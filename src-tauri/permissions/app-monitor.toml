@@ -1,0 +1,35 @@
+[[permission]]
+identifier = "allow-start-monitor"
+description = "Permite iniciar el motor de monitorización."
+commands.allow = ["start_monitor"]
+
+[[permission]]
+identifier = "allow-stop-monitor"
+description = "Permite detener el motor de monitorización."
+commands.allow = ["stop_monitor"]
+
+[[permission]]
+identifier = "allow-get-active-session"
+description = "Permite leer la sesión activa."
+commands.allow = ["get_active_session"]
+
+[[permission]]
+identifier = "allow-get-sessions"
+description = "Permite leer el historial de sesiones."
+commands.allow = ["get_sessions"]
+
+[[permission]]
+identifier = "allow-agent-status"
+description = "Permite leer el estado del agente nativo."
+commands.allow = ["agent_status"]
+
+[[set]]
+identifier = "monitor"
+description = "Conjunto de permisos del agente nativo de monitorización."
+permissions = [
+  "allow-start-monitor",
+  "allow-stop-monitor",
+  "allow-get-active-session",
+  "allow-get-sessions",
+  "allow-agent-status",
+]
