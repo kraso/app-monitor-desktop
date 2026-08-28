@@ -24,6 +24,15 @@ use tauri::{AppHandle, Emitter, State};
 /// Umbral de inactividad por defecto: 2 minutos.
 const DEFAULT_IDLE_THRESHOLD_MS: u64 = 120_000;
 
+/// Información mínima de la ventana activa usada por el bucle de muestreo.
+/// Existe en todas las plataformas para que el bucle compile igual en cada SO:
+/// en Windows lo rellena `windows::get_active_window()` y en el resto es
+/// siempre `None` (el motor queda inactivo hasta tener backend nativo).
+struct ActiveWindowInfo {
+    title: String,
+    process_name: String,
+}
+
 /// Estado del monitor gestionado por Tauri.
 /// Usa `Arc` internos para poder compartirlo con los hilos de monitoreo.
 #[derive(Clone)]
@@ -184,11 +193,14 @@ fn start_monitor(app: AppHandle, state: State<MonitorState>) -> Result<(), Strin
         let (active, idle) = {
             let idle_ms = windows::idle_time_ms();
             let is_idle = idle_ms >= threshold;
-            let active = windows::get_active_window();
+            let active = windows::get_active_window().map(|w| ActiveWindowInfo {
+                title: w.title,
+                process_name: w.process_name,
+            });
             (active, is_idle)
         };
         #[cfg(not(windows))]
-        let (active, idle): (Option<()>, bool) = (None, false);
+        let (active, idle): (Option<ActiveWindowInfo>, bool) = (None, false);
 
         let mut m = inner_loop.lock().unwrap();
         let new_state = if idle {
