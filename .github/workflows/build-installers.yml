@@ -1,0 +1,93 @@
+name: Build installers (Windows, Linux, macOS)
+
+# Se ejecuta manualmente desde la pestaña "Actions" o al publicar una tag v*.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+# Necesario para crear el release borrador con los instaladores adjuntos.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS se construye dos veces: Apple Silicon (aarch64) e Intel (x86_64).
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            targets: aarch64-apple-darwin
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            targets: x86_64-apple-darwin
+          # Linux: genera .deb, .rpm y .AppImage (el .rpm requiere rpmbuild, se instala abajo).
+          - platform: ubuntu-22.04
+            args: ""
+            targets: ""
+          # Windows: genera .msi (WiX) y .exe (NSIS).
+          - platform: windows-latest
+            args: ""
+            targets: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            rpm
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri"
+
+      - name: Build and bundle installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: app-v__VERSION__
+          releaseName: "App Monitor v__VERSION__"
+          releaseBody: |
+            Instaladores generados automáticamente para esta versión:
+            - **Windows**: instalador `.exe` (NSIS) y `.msi`
+            - **Linux**: `.deb`, `.rpm` y `.AppImage`
+            - **macOS**: `.dmg` para Apple Silicon e Intel
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Upload installers as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.platform }}-${{ matrix.args || 'x64' }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
