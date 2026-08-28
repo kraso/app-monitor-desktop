@@ -89,5 +89,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.platform }}-${{ matrix.args || 'x64' }}
-          path: src-tauri/target/release/bundle/**
-          if-no-files-found: error
+          # Con --target (macOS x2) los bundles van a target/<triple>/release/bundle;
+          # en builds nativos (Win/Linux) van a target/release/bundle.
+          path: |
+            src-tauri/target/release/bundle/**
+            src-tauri/target/*/release/bundle/**
+          if-no-files-found: warn
