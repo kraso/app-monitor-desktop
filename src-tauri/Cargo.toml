@@ -43,3 +43,7 @@ windows-sys = { version = "0.52", features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["screensaver"] }
 zbus = { version = "3.15", features = ["blocking"] }
+# Ventana activa en KDE Plasma (Wayland) vía KWin Scripting. La crate `dbus`
+# ya está en el árbol de dependencias Linux (la usa tauri), así que no añade
+# compilación ni librerías de sistema nuevas en CI.
+dbus = "0.9"
