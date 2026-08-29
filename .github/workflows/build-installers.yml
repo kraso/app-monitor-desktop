@@ -1,8 +1,10 @@
 name: Build installers (Windows, Linux, macOS)
 
-# Se ejecuta manualmente desde la pestaña "Actions" o al publicar una tag v*.
+# Se ejecuta en cada PR (validación de que compila y los tests pasan), de forma
+# manual desde la pestaña "Actions" o al publicar una tag v*.
 # macOS solo se construye si marcas "build-macos" (sus runners son de pago).
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       build-macos:
@@ -68,7 +70,14 @@ jobs:
         with:
           workspaces: "./src-tauri"
 
+      - name: Run Rust unit tests (Linux)
+        if: runner.os == 'Linux'
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Build and bundle installers
+        # En PRs solo validamos (npm build + cargo test); los instaladores y el
+        # release borrador se generan en workflow_dispatch o al publicar una tag v*.
+        if: github.event_name != 'pull_request'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
