@@ -310,7 +310,7 @@ mod wayland {
                 Box::new(move |message, _connection| {
                     if let Some(member) = message.member() {
                         if let Some(arg) = message.get1::<String>() {
-                            if member.as_ref() == "result" {
+                            if &*member == "result" {
                                 if let Some(win) = parse_payload(&arg) {
                                     *cache_rx.lock().unwrap() = Some(win);
                                 }
