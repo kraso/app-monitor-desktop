@@ -13,8 +13,9 @@
 //!   e inactividad vía `org.gnome.Mutter.IdleMonitor` (D-Bus, `zbus`).
 //! - **Wayland / Sway (wlroots)**: ventana focada vía el IPC de sway
 //!   (`$SWAYSOCK`, petición `get_tree`).
-//! - **Wayland / KDE Plasma**: detectado; la ventana activa requiere scripting
-//!   de KWin (sin API D-Bus pública) y queda pendiente. Se avisa una vez.
+//! - **Wayland / KDE Plasma**: ventana focada vía KWin Scripting — el script
+//!   reporta `workspace.activeWindow` (título/clase/pid) por `callDBus` en
+//!   cada cambio de foco (protocolo probado por kdotool).
 
 #![cfg(target_os = "linux")]
 
@@ -200,11 +201,10 @@ mod x11 {
 }
 
 /// ===========================================================================
-/// Backend Wayland — por compositor (GNOME, Sway; KDE pendiente).
+/// Backend Wayland — por compositor (GNOME, Sway, KDE).
 /// ===========================================================================
 mod wayland {
     use super::{process_name_for_pid, ActiveWindow};
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// El nombre del PID siempre se prefiere a la clase de la ventana.
     fn resolve_process(pid: Option<u32>, class: Option<String>) -> Option<String> {
@@ -225,11 +225,7 @@ mod wayland {
             return sway::active_window();
         }
         if desktop.contains("kde") || desktop.contains("plasma") {
-            log_once(
-                &KDE_WARNED,
-                "[app-monitor] aviso: ventana activa en KDE Plasma (Wayland) pendiente \
-                 de implementar (requiere scripting de KWin); la app sigue funcionando.",
-            );
+            return kde::active_window();
         }
         None
     }
@@ -241,14 +237,153 @@ mod wayland {
         if desktop.contains("gnome") || desktop.contains("unity") {
             return gnome::idle_time_ms();
         }
-        0 // Sway/KDE/u otros: sin API de idle por ahora -> nunca "idle"
+        0 // GNOME no presente: sin API de idle por ahora -> nunca "idle"
     }
 
-    static KDE_WARNED: AtomicBool = AtomicBool::new(false);
+    /// -----------------------------------------------------------------------
+    /// KDE Plasma (Wayland): KWin Scripting con reporte por evento.
+    /// -----------------------------------------------------------------------
+    /// Protocolo probado en producción por kdotool: abrimos una conexión D-Bus
+    /// de sesión y usamos su *nombre único* como destino del `callDBus` del
+    /// script de KWin. El script lee `workspace.activeWindow` y envía
+    /// título/clase/pid en cada `activeWindowChanged` (y al cargar). Se carga
+    /// una sola vez y nuestra conexión recibe los mensajes "result".
+    ///
+    /// Requisito de validación en vivo: KDE Plasma 6 en sesión Wayland con
+    /// scripting de KWin activo. Si KWin no permite cargar el script (script_id
+    /// < 0), degradamos a `None` y la app sigue funcionando sin datos.
+    /// -----------------------------------------------------------------------
+    pub(crate) mod kde {
+        use super::{process_name_for_pid, ActiveWindow};
+        use dbus::blocking::SyncConnection;
+        use dbus::channel::MatchingReceiver;
+        use dbus::message::MatchRule;
+        use serde::Deserialize;
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
 
-    fn log_once(flag: &AtomicBool, msg: &str) {
-        if flag.swap(true, Ordering::Relaxed) == false {
-            eprintln!("{msg}");
+        const KWIN_SERVICE: &str = "org.kde.KWin";
+
+        /// Payload JSON que envía el script de KWin.
+        #[derive(Deserialize)]
+        struct WindowInfo {
+            title: Option<String>,
+            #[serde(rename = "class")]
+            class: Option<String>,
+            pid: Option<u32>,
+        }
+
+        /// Conexión receptora + caché de la última ventana focada notificada.
+        struct Backend {
+            conn: SyncConnection,
+            cache: Arc<Mutex<Option<ActiveWindow>>>,
+        }
+
+        static BACKEND: Mutex<Option<Backend>> = Mutex::new(None);
+
+        pub fn active_window() -> Option<ActiveWindow> {
+            // Inicializa el backend KDE la primera vez que se consulta.
+            {
+                let mut guard = BACKEND.lock().ok()?;
+                if guard.is_none() {
+                    *guard = spawn();
+                }
+            }
+            let backend_guard = BACKEND.lock().ok()?;
+            let backend = backend_guard.as_ref()?;
+            // Drena los mensajes "result" pendientes y actualiza la caché.
+            let _ = backend.conn.process(Duration::from_millis(10));
+            let cached = backend.cache.lock().ok()?;
+            cached.clone()
+        }
+
+        fn spawn() -> Option<Backend> {
+            // 1) Conexión de escucha; su nombre único será el destino del script.
+            let conn = SyncConnection::new_session().ok()?;
+            let unique = conn.unique_name().to_string();
+            let cache = Arc::new(Mutex::new(None::<ActiveWindow>));
+
+            let cache_rx = cache.clone();
+            let receiver = conn.start_receive(
+                MatchRule::new_method_call(),
+                Box::new(move |message, _connection| {
+                    if let Some(member) = message.member() {
+                        if let Some(arg) = message.get1::<String>() {
+                            if &*member == "result" {
+                                if let Some(win) = parse_payload(&arg) {
+                                    *cache_rx.lock().unwrap() = Some(win);
+                                }
+                            }
+                        }
+                    }
+                    true // mantener el listener
+                }),
+            );
+            // El receptor vive mientras el proceso (backend de app-lifetime).
+            Box::leak(Box::new(receiver));
+
+            // 2) Script de KWin: reporta al cargar y en cada cambio de foco.
+            let script = format!(
+                r#"function output_result(message) {{
+    callDBus("{}", "/", "", "result", message.toString());
+}}
+function report() {{
+    const w = workspace.activeWindow;
+    if (w) {{
+        output_result(JSON.stringify({{ title: w.caption, class: w.resourceClass, pid: w.pid }}));
+    }} else {{
+        output_result("null");
+    }}
+}}
+workspace.activeWindowChanged.connect(report);
+report();
+"#,
+                unique
+            );
+
+            let script_name = format!("app-monitor-{}", std::process::id());
+            let path = std::env::temp_dir().join(format!("{script_name}.js"));
+            {
+                let mut file = std::fs::File::create(&path).ok()?;
+                file.write_all(script.as_bytes()).ok()?;
+            }
+
+            // 3) Carga del script en KWin (org.kde.KWin /Scripting).
+            let kwin = SyncConnection::new_session().ok()?;
+            let proxy = kwin.with_proxy(KWIN_SERVICE, "/Scripting", Duration::from_millis(5000));
+            let (script_id,): (i32,) = proxy
+                .method_call(
+                    "org.kde.kwin.Scripting",
+                    "loadScript",
+                    (
+                        path.to_str().unwrap_or_default(),
+                        script_name.as_str(),
+                    ),
+                )
+                .ok()?;
+            if script_id < 0 {
+                return None; // scripting de KWin no disponible / nombre duplicado
+            }
+            // KWin ya leyó el fichero en loadScript (como hace kdotool).
+            let _ = std::fs::remove_file(&path);
+
+            Some(Backend { conn, cache })
+        }
+
+        /// Parsea el payload JSON enviado por el script de KWin.
+        pub(crate) fn parse_payload(payload: &str) -> Option<ActiveWindow> {
+            if payload == "null" {
+                return None;
+            }
+            let info: WindowInfo = serde_json::from_str(payload).ok()?;
+            let title = info.title.unwrap_or_default();
+            let process_name = info
+                .pid
+                .and_then(process_name_for_pid)
+                .or(info.class)
+                .unwrap_or_else(|| String::from("unknown"));
+            Some(ActiveWindow { title, process_name })
         }
     }
 
@@ -453,5 +588,20 @@ mod tests {
     fn sway_tree_empty_returns_none() {
         let tree = wayland::sway::empty_tree();
         assert!(wayland::sway::parse_focused(&tree).is_none());
+    }
+
+    #[test]
+    fn kde_parses_window_payload() {
+        let win = wayland::kde::parse_payload(r#"{"title":"Konsole","class":"konsole","pid":1234}"#);
+        assert!(win.is_some());
+        let win = win.unwrap();
+        assert_eq!(win.title, "Konsole");
+        // pid 1234 no existe -> cae a la clase de la ventana.
+        assert_eq!(win.process_name, "konsole");
+    }
+
+    #[test]
+    fn kde_parses_null_payload_as_none() {
+        assert!(wayland::kde::parse_payload("null").is_none());
     }
 }
