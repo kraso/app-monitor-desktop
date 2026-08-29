@@ -256,7 +256,7 @@ mod wayland {
     pub(crate) mod kde {
         use super::{process_name_for_pid, ActiveWindow};
         use dbus::blocking::SyncConnection;
-        use dbus::MatchRule;
+        use dbus::channel::{Channel, MatchRule};
         use serde::Deserialize;
         use std::io::Write;
         use std::sync::{Arc, Mutex};
@@ -282,14 +282,19 @@ mod wayland {
         static BACKEND: Mutex<Option<Backend>> = Mutex::new(None);
 
         pub fn active_window() -> Option<ActiveWindow> {
-            let mut guard = BACKEND.lock().ok()?;
-            if guard.is_none() {
-                *guard = spawn();
+            // Inicializa el backend KDE la primera vez que se consulta.
+            {
+                let mut guard = BACKEND.lock().ok()?;
+                if guard.is_none() {
+                    *guard = spawn();
+                }
             }
-            let backend = guard.as_ref()?;
+            let backend_guard = BACKEND.lock().ok()?;
+            let backend = backend_guard.as_ref()?;
             // Drena los mensajes "result" pendientes y actualiza la caché.
             let _ = backend.conn.process(Duration::from_millis(10));
-            backend.cache.lock().ok()?.clone()
+            let cached = backend.cache.lock().ok()?;
+            cached.clone()
         }
 
         fn spawn() -> Option<Backend> {
@@ -302,12 +307,12 @@ mod wayland {
             let receiver = conn.start_receive(
                 MatchRule::new_method_call(),
                 Box::new(move |message, _connection| {
-                    if let Some(member) = message.member()
-                        && let Some(arg) = message.get1::<String>()
-                    {
-                        if member.as_ref() == "result" {
-                            if let Some(win) = parse_payload(&arg) {
-                                *cache_rx.lock().unwrap() = Some(win);
+                    if let Some(member) = message.member() {
+                        if let Some(arg) = message.get1::<String>() {
+                            if member.as_ref() == "result" {
+                                if let Some(win) = parse_payload(&arg) {
+                                    *cache_rx.lock().unwrap() = Some(win);
+                                }
                             }
                         }
                     }
