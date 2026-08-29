@@ -146,8 +146,12 @@ fn start_monitor(app: AppHandle, state: State<MonitorState>) -> Result<(), Strin
 
     // Clonamos el estado gestionado (los Arc internos) para los hilos.
     let state = state.clone();
+    // Estos clones solo participan en el listener de bloqueo/suspensión (Windows).
+    #[cfg(windows)]
     let app_power = app.clone();
+    #[cfg(windows)]
     let state_power = state.clone();
+    #[cfg(windows)]
     let state_running = state.clone();
 
     // Listener de bloqueo/suspensión que alimenta el estado del monitor.

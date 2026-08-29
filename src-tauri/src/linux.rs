@@ -259,7 +259,7 @@ mod wayland {
         use super::{resolve_process, ActiveWindow};
         use std::collections::HashMap;
         use zbus::blocking::{Connection, Proxy};
-        use zbus::zvariant::Value;
+        use zbus::zvariant::{OwnedValue, Value};
 
         fn session() -> Option<Connection> {
             Connection::session().ok()
@@ -278,7 +278,7 @@ mod wayland {
             // Con la opción "focus", GNOME devuelve solo la ventana con foco.
             let mut options = HashMap::new();
             options.insert("focus".to_string(), Value::Bool(true));
-            let windows: Vec<HashMap<String, Value>> =
+            let windows: Vec<HashMap<String, OwnedValue>> =
                 proxy.call("GetWindows", &(&options,)).ok()?;
 
             let win = windows.into_iter().next()?;
@@ -309,18 +309,18 @@ mod wayland {
             u64::from(ms)
         }
 
-        fn str_field(f: &HashMap<String, Value>, key: &str) -> Option<String> {
+        fn str_field(f: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
             match f.get(key) {
-                Some(Value::Str(s)) => Some(s.to_string()),
+                Some(OwnedValue::Str(s)) => Some(s.clone()),
                 _ => None,
             }
         }
 
-        fn int_field(f: &HashMap<String, Value>, key: &str) -> Option<u32> {
+        fn int_field(f: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
             match f.get(key) {
-                Some(Value::U32(n)) => Some(*n),
-                Some(Value::U64(n)) => Some(*n as u32),
-                Some(Value::I32(n)) if *n >= 0 => Some(*n as u32),
+                Some(OwnedValue::U32(n)) => Some(*n),
+                Some(OwnedValue::U64(n)) => Some(*n as u32),
+                Some(OwnedValue::I32(n)) if *n >= 0 => Some(*n as u32),
                 _ => None,
             }
         }
