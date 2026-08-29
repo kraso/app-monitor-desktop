@@ -1,5 +1,0 @@
-E:\Proyectos\Proyectos con Next.js\app-monitor-desktop\src-tauri\target\release\build\serde_json-f6f8e6ee89b84891\build_script_build-f6f8e6ee89b84891.d: C:\Users\USUARIO\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde_json-1.0.151\build.rs
-
-E:\Proyectos\Proyectos con Next.js\app-monitor-desktop\src-tauri\target\release\build\serde_json-f6f8e6ee89b84891\build_script_build-f6f8e6ee89b84891.exe: C:\Users\USUARIO\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde_json-1.0.151\build.rs
-
-C:\Users\USUARIO\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde_json-1.0.151\build.rs:
