@@ -41,5 +41,5 @@ windows-sys = { version = "0.52", features = [
 # sin dependencias de C) y D-Bus puro en Rust (zbus) para Wayland (GNOME).
 # serde_json (ya declarado arriba) sirve también para el IPC de sway.
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = "0.13"
+x11rb = { version = "0.13", features = ["screensaver"] }
 zbus = { version = "3.15", features = ["blocking"] }

@@ -101,8 +101,13 @@ mod x11 {
         }
     }
 
-    fn intern(conn: &RustConnection, name: &[u8]) -> Option<u32> {
-        conn.intern_atom(false, name).ok()?.reply().ok()?.atom.into()
+    fn intern(conn: &RustConnection, name: &[u8]) -> Result<u32, ()> {
+        let reply = conn
+            .intern_atom(false, name)
+            .map_err(|_| ())?
+            .reply()
+            .map_err(|_| ())?;
+        Ok(reply.atom.into())
     }
 
     pub fn active_window() -> Option<ActiveWindow> {
@@ -115,9 +120,9 @@ mod x11 {
             // 1) Ventana activa (EWMH) desde la raíz.
             let prop = conn
                 .get_property(false, root, a_active, AtomEnum::WINDOW, 0, 1)
-                .ok()?
+                .map_err(|_| ())?
                 .reply()
-                .ok()?;
+                .map_err(|_| ())?;
             if prop.value.len() < 4 {
                 return Err(());
             }
@@ -142,15 +147,10 @@ mod x11 {
     pub fn idle_time_ms() -> u64 {
         with_x11(|conn, root| {
             // Extensión XScreenSaver -> ms desde la última entrada del usuario.
-            let ext = conn
-                .extension_information(x11rb::protocol::screensaver::X11_EXTENSION_NAME)
-                .ok()
-                .flatten()
-                .ok_or(())?;
-            let reply = x11rb::protocol::screensaver::query_info(conn, root, ext.first_event)
-                .ok()?
+            let reply = x11rb::protocol::screensaver::query_info(conn, root)
+                .map_err(|_| ())?
                 .reply()
-                .ok()?;
+                .map_err(|_| ())?;
             Ok(u64::from(reply.ms_since_user_input))
         })
         .unwrap_or(0)
@@ -206,10 +206,7 @@ mod x11 {
 /// ===========================================================================
 mod wayland {
     use super::{process_name_for_pid, ActiveWindow};
-    use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use zbus::blocking::{Connection, Proxy};
-    use zbus::zvariant::Value;
 
     /// El nombre del PID siempre se prefiere a la clase de la ventana.
     fn resolve_process(pid: Option<u32>, class: Option<String>) -> Option<String> {
@@ -283,8 +280,8 @@ mod wayland {
             // Con la opción "focus", GNOME devuelve solo la ventana con foco.
             let mut options = HashMap::new();
             options.insert("focus".to_string(), Value::Bool(true));
-            let message = proxy.call("GetWindows", &(&options,)).ok()?;
-            let windows: Vec<HashMap<String, Value>> = message.body().deserialize().ok()?;
+            let windows: Vec<HashMap<String, Value>> =
+                proxy.call("GetWindows", &(&options,)).ok()?;
 
             let win = windows.into_iter().next()?;
             let title = str_field(&win, "title").unwrap_or_default();
@@ -310,11 +307,7 @@ mod wayland {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
-            let message = match proxy.call("GetIdletime", &(0i32,)) {
-                Ok(m) => m,
-                Err(_) => return 0,
-            };
-            match message.body().deserialize::<u32>() {
+            match proxy.call("GetIdletime", &(0i32,)) {
                 Ok(ms) => u64::from(ms),
                 Err(_) => 0,
             }
@@ -340,7 +333,7 @@ mod wayland {
     /// -----------------------------------------------------------------------
     /// Sway (wlroots): IPC de sway sobre $SWAYSOCK (petición get_tree).
     /// -----------------------------------------------------------------------
-    mod sway {
+    pub(crate) mod sway {
         use super::{process_name_for_pid, ActiveWindow};
         use serde_json::Value as Json;
         use std::io::{Read, Write};
@@ -373,7 +366,7 @@ mod wayland {
             parse_focused(&tree)
         }
 
-        fn parse_focused(node: &Json) -> Option<ActiveWindow> {
+        pub(crate) fn parse_focused(node: &Json) -> Option<ActiveWindow> {
             if node.get("focused").and_then(Json::as_bool) == Some(true) {
                 let pid = node.get("pid").and_then(Json::as_u64).map(|p| p as u32);
                 let class = node
@@ -405,7 +398,7 @@ mod wayland {
         }
 
         #[cfg(test)]
-        fn sample_tree() -> Json {
+        pub(crate) fn sample_tree() -> Json {
             serde_json::json!({
                 "name": "root",
                 "focused": false,
@@ -424,7 +417,7 @@ mod wayland {
         }
 
         #[cfg(test)]
-        fn empty_tree() -> Json {
+        pub(crate) fn empty_tree() -> Json {
             serde_json::json!({ "name": "root", "focused": false, "nodes": [], "floating_nodes": [] })
         }
     }
