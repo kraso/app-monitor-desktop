@@ -82,7 +82,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__
+          tagName: app-monitor-v__VERSION__
           releaseName: "App Monitor v__VERSION__"
           releaseBody: |
             Instaladores generados automáticamente para esta versión:
@@ -150,7 +150,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__
+          tagName: app-monitor-v__VERSION__
           releaseName: "App Monitor v__VERSION__"
           releaseBody: |
             Instaladores generados automáticamente para esta versión:
