@@ -310,17 +310,18 @@ mod wayland {
         }
 
         fn str_field(f: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-            match f.get(key) {
-                Some(OwnedValue::Str(s)) => Some(s.clone()),
+            // OwnedValue deref a Value<'static>; se accede por deref.
+            match f.get(key).map(|v| &**v) {
+                Some(Value::Str(s)) => Some(s.to_string()),
                 _ => None,
             }
         }
 
         fn int_field(f: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-            match f.get(key) {
-                Some(OwnedValue::U32(n)) => Some(*n),
-                Some(OwnedValue::U64(n)) => Some(*n as u32),
-                Some(OwnedValue::I32(n)) if *n >= 0 => Some(*n as u32),
+            match f.get(key).map(|v| &**v) {
+                Some(Value::U32(n)) => Some(*n),
+                Some(Value::U64(n)) => Some(*n as u32),
+                Some(Value::I32(n)) if *n >= 0 => Some(*n as u32),
                 _ => None,
             }
         }
