@@ -1,2 +1,3 @@
-[build]
-target-dir = "C:/Users/USUARIO/AppData/Local/Temp/app-monitor-cargo-target"
+# Configuración de cargo de la aplicación.
+# Nota: el target-dir por defecto (src-tauri/target) funciona en todas las
+# plataformas; una ruta hardcodeada de un SO concreto rompe el CI en los demás.

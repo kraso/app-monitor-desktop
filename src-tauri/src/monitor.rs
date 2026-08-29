@@ -232,7 +232,7 @@ mod tests {
             "Bloc de notas".into(),
             1_000,
         );
-        assert!(started);
+        assert!(started.is_some());
         assert_eq!(m.active_session().unwrap().process_name, "notepad.exe");
     }
 
@@ -241,7 +241,7 @@ mod tests {
         let mut m = Monitor::new(60_000);
         m.tick("A".into(), "code.exe".into(), "VS Code".into(), 1_000);
         let started = m.tick("B (otra pestaña)".into(), "code.exe".into(), "VS Code".into(), 2_000);
-        assert!(!started);
+        assert!(started.is_none());
         assert_eq!(m.active_session().unwrap().window_title, "B (otra pestaña)");
         assert_eq!(m.sessions().len(), 0);
     }
