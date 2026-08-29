@@ -14,6 +14,8 @@ mod monitor;
 mod power;
 #[cfg(windows)]
 mod windows;
+#[cfg(target_os = "linux")]
+mod linux;
 
 use monitor::{ActivityState, Monitor};
 use serde::Serialize;
@@ -144,8 +146,12 @@ fn start_monitor(app: AppHandle, state: State<MonitorState>) -> Result<(), Strin
 
     // Clonamos el estado gestionado (los Arc internos) para los hilos.
     let state = state.clone();
+    // Estos clones solo participan en el listener de bloqueo/suspensión (Windows).
+    #[cfg(windows)]
     let app_power = app.clone();
+    #[cfg(windows)]
     let state_power = state.clone();
+    #[cfg(windows)]
     let state_running = state.clone();
 
     // Listener de bloqueo/suspensión que alimenta el estado del monitor.
@@ -199,7 +205,17 @@ fn start_monitor(app: AppHandle, state: State<MonitorState>) -> Result<(), Strin
             });
             (active, is_idle)
         };
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        let (active, idle) = {
+            let idle_ms = linux::idle_time_ms();
+            let is_idle = idle_ms >= threshold;
+            let active = linux::get_active_window().map(|w| ActiveWindowInfo {
+                title: w.title,
+                process_name: w.process_name,
+            });
+            (active, is_idle)
+        };
+        #[cfg(not(any(windows, target_os = "linux")))]
         let (active, idle): (Option<ActiveWindowInfo>, bool) = (None, false);
 
         let mut m = inner_loop.lock().unwrap();

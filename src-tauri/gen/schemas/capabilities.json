@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Capability for the main window","local":true,"windows":["main"],"permissions":["core:default","core:event:default","opener:default","dialog:default","fs:default","fs:allow-write-text-file","allow-start-monitor","allow-stop-monitor","allow-get-active-session","allow-get-sessions","allow-agent-status"]}}

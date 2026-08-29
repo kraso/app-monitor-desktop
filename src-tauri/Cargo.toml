@@ -1,6 +1,6 @@
 [package]
 name = "app-monitor"
-version = "0.1.0"
+version = "0.1.1"
 description = "App Monitor - monitorización de uso de aplicaciones"
 authors = ["you"]
 edition = "2021"
@@ -36,3 +36,10 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_LibraryLoader",
 ] }
+
+# Backend nativo de Linux (solo se compila en Linux): X11 puro en Rust (x11rb,
+# sin dependencias de C) y D-Bus puro en Rust (zbus) para Wayland (GNOME).
+# serde_json (ya declarado arriba) sirve también para el IPC de sway.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["screensaver"] }
+zbus = { version = "3.15", features = ["blocking"] }
