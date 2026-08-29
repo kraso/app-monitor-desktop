@@ -256,7 +256,8 @@ mod wayland {
     pub(crate) mod kde {
         use super::{process_name_for_pid, ActiveWindow};
         use dbus::blocking::SyncConnection;
-        use dbus::channel::{Channel, MatchRule};
+        use dbus::channel::MatchingReceiver;
+        use dbus::message::MatchRule;
         use serde::Deserialize;
         use std::io::Write;
         use std::sync::{Arc, Mutex};
