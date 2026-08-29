@@ -226,13 +226,14 @@ mod tests {
     #[test]
     fn starts_new_session_on_first_tick() {
         let mut m = Monitor::new(60_000);
-        let started = m.tick(
+        // El primer tick no cierra ninguna sesión (no hay nada abierto): devuelve None.
+        let closed = m.tick(
             "Notas".into(),
             "notepad.exe".into(),
             "Bloc de notas".into(),
             1_000,
         );
-        assert!(started.is_some());
+        assert!(closed.is_none());
         assert_eq!(m.active_session().unwrap().process_name, "notepad.exe");
     }
 
