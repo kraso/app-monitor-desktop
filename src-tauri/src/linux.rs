@@ -18,8 +18,6 @@
 
 #![cfg(target_os = "linux")]
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 /// Información de la ventana actualmente en primer plano.
 #[derive(Debug, Clone)]
 pub struct ActiveWindow {
@@ -307,10 +305,8 @@ mod wayland {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
-            match proxy.call("GetIdletime", &(0i32,)) {
-                Ok(ms) => u64::from(ms),
-                Err(_) => 0,
-            }
+            let ms: u32 = proxy.call("GetIdletime", &(0i32,)).unwrap_or(0);
+            u64::from(ms)
         }
 
         fn str_field(f: &HashMap<String, Value>, key: &str) -> Option<String> {
