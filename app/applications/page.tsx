@@ -5,14 +5,7 @@ import { Card, CardHeader } from "@/components/ui/card";
 import { ActivityPanel } from "@/components/monitoring/activity-panel";
 import { useMonitoring } from "@/app/use-monitoring";
 import type { AppStatsView } from "@/features/monitoring/types";
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
+import { formatDuration } from "@/lib/utils/format";
 
 function formatDate(unixMillis: number): string {
   return new Date(unixMillis).toLocaleString("es-ES", {

@@ -7,14 +7,7 @@ import { ActivityPanel } from "@/components/monitoring/activity-panel";
 import { useMonitoring } from "@/app/use-monitoring";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
+import { formatDuration } from "@/lib/utils/format";
 
 function formatDate(unixMillis: number): string {
   return new Date(unixMillis).toLocaleString("es-ES", {
@@ -83,19 +76,27 @@ export default function Reports() {
             "process_name",
             "window_title",
             "started_at",
-            "duration_ms",
+            "duration",
             "is_idle",
           ];
-          const rows = filteredSessions.map((s) =>
-            [
+          const rows = filteredSessions.map((s) => {
+            const d = new Date(s.started_at);
+            const dd = String(d.getDate()).padStart(2, "0");
+            const mm = String(d.getMonth() + 1).padStart(2, "0");
+            const yyyy = d.getFullYear();
+            const hh = String(d.getHours()).padStart(2, "0");
+            const min = String(d.getMinutes()).padStart(2, "0");
+            const ss = String(d.getSeconds()).padStart(2, "0");
+            const startedAt = `${dd}/${mm}/${yyyy} ${hh}:${min}:${ss}`;
+            return [
               s.application_name,
               s.process_name,
               `"${s.window_title.replace(/"/g, '""')}"`,
-              s.started_at,
-              s.duration_ms,
+              startedAt,
+              formatDuration(s.duration_ms),
               s.is_idle,
-            ].join(","),
-          );
+            ].join(",");
+          });
           content = [headers.join(","), ...rows].join("\n");
           await writeTextFile(filePath, content);
           showMessage("CSV guardado correctamente");
@@ -127,7 +128,7 @@ export default function Reports() {
           filters: [{ name: "HTML", extensions: ["html"] }],
         });
         if (filePath) {
-          content = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Informe</title></head><body style="font-family:system-ui;padding:2rem"><h1>Informe de productividad</h1><p>Generado: ${new Date().toLocaleString("es-ES")}</p><table border="1" cellpadding="8" style="border-collapse:collapse;width:100%"><tr><th>App</th><th>Duración</th></tr>${filteredSessions.map((s) => `<tr><td>${s.application_name}</td><td>${formatDuration(s.duration_ms)}</td></tr>`).join("")}</table></body></html>`;
+          content = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Informe</title></head><body style="font-family:system-ui;padding:2rem"><h1>Informe de productividad</h1><p>Generado: ${new Date().toLocaleString("es-ES")}</p><table border="1" cellpadding="8" style="border-collapse:collapse;width:100%"><tr><th style="text-align:center">App</th><th style="text-align:center">Duración</th></tr>${filteredSessions.map((s) => `<tr><td>${s.application_name}</td><td style="text-align:right">${formatDuration(s.duration_ms)}</td></tr>`).join("")}</table></body></html>`;
           await writeTextFile(filePath, content);
           showMessage("HTML guardado. Ábrelo para imprimir.");
         }
