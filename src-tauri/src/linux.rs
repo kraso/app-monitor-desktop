@@ -26,13 +26,36 @@ pub struct ActiveWindow {
     pub process_name: String,
 }
 
+/// Log de diagnóstico a stderr, activado con la variable APP_MONITOR_DEBUG=1.
+/// Útil para diagnosticar por qué un backend no reporta ventanas (p. ej. KDE
+/// en Wayland): cada decisión y cada punto de fallo se imprimen en detalle.
+fn dbg(msg: impl AsRef<str>) {
+    if std::env::var_os("APP_MONITOR_DEBUG").is_some() {
+        eprintln!("[app-monitor/linux] {}", msg.as_ref());
+    }
+}
+
 /// Obtiene la ventana en primer plano (título y proceso) según el entorno.
 pub fn get_active_window() -> Option<ActiveWindow> {
-    if is_wayland_session() {
+    dbg(format!(
+        "get_active_window: WAYLAND_DISPLAY={:?} XDG_CURRENT_DESKTOP={:?} DISPLAY={:?} SWAYSOCK={:?}",
+        std::env::var_os("WAYLAND_DISPLAY"),
+        std::env::var_os("XDG_CURRENT_DESKTOP"),
+        std::env::var_os("DISPLAY"),
+        std::env::var_os("SWAYSOCK"),
+    ));
+    let result = if is_wayland_session() {
+        dbg("entorno: sesion Wayland -> backend wayland");
         wayland::active_window()
     } else {
+        dbg("entorno: sesion X11 -> backend x11");
         x11::active_window()
-    }
+    };
+    dbg(format!(
+        "get_active_window -> {:?}",
+        result.as_ref().map(|w| (&w.title, &w.process_name))
+    ));
+    result
 }
 
 /// Milisegundos desde la última interacción del usuario (teclado/ratón).
@@ -70,7 +93,7 @@ fn process_name_for_pid(pid: u32) -> Option<String> {
 /// Backend X11 (EWMH + XScreenSaver) — cualquier escritorio con servidor X.
 /// ===========================================================================
 mod x11 {
-    use super::{process_name_for_pid, ActiveWindow};
+    use super::{dbg, process_name_for_pid, ActiveWindow};
     use std::sync::Mutex;
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
@@ -87,6 +110,7 @@ mod x11 {
                 let root = conn.setup().roots[screen].root;
                 *guard = Some((conn, root));
             } else {
+                dbg("x11: no se pudo conectar con el servidor X (DISPLAY no disponible?)");
                 return None;
             }
         }
@@ -94,6 +118,7 @@ mod x11 {
         match f(conn, *root) {
             Ok(v) => Some(v),
             Err(()) => {
+                dbg("x11: error en la consulta de ventana activa");
                 *guard = None; // el servidor X cayó: reconectar la próxima vez
                 None
             }
@@ -204,7 +229,7 @@ mod x11 {
 /// Backend Wayland — por compositor (GNOME, Sway, KDE).
 /// ===========================================================================
 mod wayland {
-    use super::{process_name_for_pid, ActiveWindow};
+    use super::{dbg, process_name_for_pid, ActiveWindow};
 
     /// El nombre del PID siempre se prefiere a la clase de la ventana.
     fn resolve_process(pid: Option<u32>, class: Option<String>) -> Option<String> {
@@ -217,16 +242,21 @@ mod wayland {
         let desktop = std::env::var("XDG_CURRENT_DESKTOP")
             .unwrap_or_default()
             .to_lowercase();
+        dbg(format!("wayland: XDG_CURRENT_DESKTOP = {desktop:?}"));
 
         if desktop.contains("gnome") || desktop.contains("unity") {
+            dbg("wayland: compositor detectado = GNOME/Unity");
             return gnome::active_window();
         }
         if desktop.contains("sway") || std::env::var_os("SWAYSOCK").is_some() {
+            dbg("wayland: compositor detectado = Sway");
             return sway::active_window();
         }
         if desktop.contains("kde") || desktop.contains("plasma") {
+            dbg("wayland: compositor detectado = KDE Plasma -> KWin Scripting");
             return kde::active_window();
         }
+        dbg("wayland: ningun compositor conocido detectado -> None");
         None
     }
 
@@ -254,7 +284,7 @@ mod wayland {
     /// < 0), degradamos a `None` y la app sigue funcionando sin datos.
     /// -----------------------------------------------------------------------
     pub(crate) mod kde {
-        use super::{process_name_for_pid, ActiveWindow};
+        use super::{dbg, process_name_for_pid, ActiveWindow};
         use dbus::blocking::SyncConnection;
         use dbus::channel::MatchingReceiver;
         use dbus::message::MatchRule;
@@ -287,7 +317,13 @@ mod wayland {
             {
                 let mut guard = BACKEND.lock().ok()?;
                 if guard.is_none() {
+                    dbg("kde: backend no inicializado -> intentando spawn()");
                     *guard = spawn();
+                    if guard.is_some() {
+                        dbg("kde: spawn() OK, backend listo");
+                    } else {
+                        dbg("kde: spawn() fallo -> backend no disponible (degradando a None)");
+                    }
                 }
             }
             let backend_guard = BACKEND.lock().ok()?;
@@ -295,13 +331,26 @@ mod wayland {
             // Drena los mensajes "result" pendientes y actualiza la caché.
             let _ = backend.conn.process(Duration::from_millis(10));
             let cached = backend.cache.lock().ok()?;
+            if cached.is_none() {
+                dbg("kde: cache vacia (KWin no ha reportado ninguna ventana todavia)");
+            } else {
+                let w = cached.as_ref().unwrap();
+                dbg(format!("kde: ventana en cache: title={:?} process={:?}", w.title, w.process_name));
+            }
             cached.clone()
         }
 
         fn spawn() -> Option<Backend> {
             // 1) Conexión de escucha; su nombre único será el destino del script.
-            let conn = SyncConnection::new_session().ok()?;
+            let conn = match SyncConnection::new_session() {
+                Ok(c) => c,
+                Err(e) => {
+                    dbg(format!("kde: ERROR conectando al bus de sesion D-Bus: {e}"));
+                    return None;
+                }
+            };
             let unique = conn.unique_name().to_string();
+            dbg(format!("kde: conexion de escucha OK, unique name = {unique}"));
             let cache = Arc::new(Mutex::new(None::<ActiveWindow>));
 
             let cache_rx = cache.clone();
@@ -312,8 +361,16 @@ mod wayland {
                         if let Some(arg) = message.get1::<String>() {
                             if &*member == "result" {
                                 if let Some(win) = parse_payload(&arg) {
+                                    dbg(format!(
+                                        "kde: KWin reporto ventana via callDBus -> title={:?} process={:?}",
+                                        win.title, win.process_name
+                                    ));
                                     *cache_rx.lock().unwrap() = Some(win);
+                                } else {
+                                    dbg(format!("kde: KWin envio payload no parseable: {arg:?}"));
                                 }
+                            } else {
+                                dbg(format!("kde: metodo D-Bus inesperado: {member:?}"));
                             }
                         }
                     }
@@ -345,28 +402,55 @@ report();
             let script_name = format!("app-monitor-{}", std::process::id());
             let path = std::env::temp_dir().join(format!("{script_name}.js"));
             {
-                let mut file = std::fs::File::create(&path).ok()?;
-                file.write_all(script.as_bytes()).ok()?;
+                let mut file = match std::fs::File::create(&path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        dbg(format!("kde: ERROR escribiendo el script en {path:?}: {e}"));
+                        return None;
+                    }
+                };
+                if let Err(e) = file.write_all(script.as_bytes()) {
+                    dbg(format!("kde: ERROR escribiendo el contenido del script: {e}"));
+                    return None;
+                }
+                dbg(format!("kde: script escrito en {path:?}"));
             }
 
             // 3) Carga del script en KWin (org.kde.KWin /Scripting).
-            let kwin = SyncConnection::new_session().ok()?;
+            let kwin = match SyncConnection::new_session() {
+                Ok(c) => c,
+                Err(e) => {
+                    dbg(format!("kde: ERROR segunda conexion al bus de sesion: {e}"));
+                    return None;
+                }
+            };
             let proxy = kwin.with_proxy(KWIN_SERVICE, "/Scripting", Duration::from_millis(5000));
-            let (script_id,): (i32,) = proxy
-                .method_call(
-                    "org.kde.kwin.Scripting",
-                    "loadScript",
-                    (
-                        path.to_str().unwrap_or_default(),
-                        script_name.as_str(),
-                    ),
-                )
-                .ok()?;
-            if script_id < 0 {
-                return None; // scripting de KWin no disponible / nombre duplicado
+            let script_result = proxy.method_call(
+                "org.kde.kwin.Scripting",
+                "loadScript",
+                (
+                    path.to_str().unwrap_or_default(),
+                    script_name.as_str(),
+                ),
+            );
+            match script_result {
+                Ok((script_id,)) => {
+                    if script_id < 0 {
+                        dbg(format!(
+                            "kde: loadScript devolvio script_id={script_id} < 0 -> scripting no disponible o nombre duplicado"
+                        ));
+                        return None;
+                    }
+                    dbg(format!("kde: loadScript OK, script_id = {script_id}"));
+                }
+                Err(e) => {
+                    dbg(format!("kde: ERROR llamada loadScript a KWin: {e}"));
+                    return None;
+                }
             }
             // KWin ya leyó el fichero en loadScript (como hace kdotool).
             let _ = std::fs::remove_file(&path);
+            dbg("kde: backend KWin inicializado correctamente");
 
             Some(Backend { conn, cache })
         }
