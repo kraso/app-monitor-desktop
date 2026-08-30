@@ -380,13 +380,16 @@ mod wayland {
             // El receptor vive mientras el proceso (backend de app-lifetime).
             Box::leak(Box::new(receiver));
 
-            // 2) Script de KWin: reporta al cargar y en cada cambio de foco.
-            // OJO (Plasma 6): la señal por defecto de scripting cambió — en
-            // KWin 6 la señal además de activeWindowChanged es clientActivated,
-            // y activeWindowChanged puede no existir (lo detectamos en vivo en
-            // Fedora 44 / Plasma 6: "Cannot call method 'connect' of
-            // undefined"). El script conecta la primera que exista y protege
-            // cada paso con try/catch para no morir en silencio.
+            // 2) Script de KWin: reporta la ventana activa al cargar, en cada cambio de
+//            foco y con un polling de respaldo. OJO (Plasma 6 / KWin 6):
+//            los nombres de las señales de scripting cambian entre versiones
+//            (activeWindowChanged, clientActivated, activeClientChanged...).
+//            Lo detectamos en vivo en Fedora 44: el script moría al conectar
+//            activeWindowChanged ("Cannot call method 'connect' of
+//            undefined"). Por robustez conectamos TODAS las señales conocidas
+//            que existan (try/catch individual) y ademas un setInterval de
+//            respaldo que consulta workspace.activeWindow cada segundo y solo
+//            reporta cuando cambia (deduplicacion por clave).
             let script = format!(
                 r#"function debug_log(message) {{
     try {{ print(message); }} catch (e) {{ }}
@@ -398,32 +401,49 @@ function output_result(message) {{
         debug_log("app-monitor: callDBus fallo: " + e);
     }}
 }}
-function report() {{
+function window_key(w) {{
+    return w ? (w.caption || "") + "|" + (w.resourceClass || "") + "|" + w.pid : "";
+}}
+var last_key = "";
+function report(force) {{
     try {{
         var w = workspace.activeWindow;
-        if (w) {{
-            output_result(JSON.stringify({{
-                title: w.caption || "",
-                class: w.resourceClass || "",
-                pid: (typeof w.pid === "number") ? w.pid : 0
-            }}));
-        }} else {{
-            output_result("null");
+        var key = window_key(w);
+        if (force || key !== last_key) {{
+            last_key = key;
+            if (w) {{
+                output_result(JSON.stringify({{
+                    title: w.caption || "",
+                    class: w.resourceClass || "",
+                    pid: (typeof w.pid === "number") ? w.pid : 0
+                }}));
+            }} else {{
+                output_result("null");
+            }}
         }}
     }} catch (e) {{
         debug_log("app-monitor: report fallo: " + e);
     }}
 }}
-try {{
-    workspace.clientActivated.connect(report);
-}} catch (e) {{
+// Conecta todas las senales de foco conocidas de KWin (5 y 6); cada una
+// protegida por si no existe en esta version.
+var signal_names = ["clientActivated", "activeWindowChanged", "activeClientChanged", "clientListChanged"];
+for (var i = 0; i < signal_names.length; i++) {{
     try {{
-        workspace.activeWindowChanged.connect(report);
-    }} catch (e2) {{
-        debug_log("app-monitor: no se pudo conectar ninguna senal de foco: " + e2);
-    }}
+        var sig = workspace[signal_names[i]];
+        if (sig && sig.connect) {{
+            sig.connect(report);
+            debug_log("app-monitor: senal conectada: " + signal_names[i]);
+        }}
+    }} catch (e) {{ }}
 }}
-report();
+// Respaldo: comprueba cada segundo y reporta solo si cambio el foco.
+try {{
+    setInterval(function () {{ report(false); }}, 1000);
+}} catch (e) {{
+    debug_log("app-monitor: setInterval no disponible: " + e);
+}}
+report(true);
 "#,
                 unique
             );
