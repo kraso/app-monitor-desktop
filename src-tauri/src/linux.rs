@@ -290,6 +290,7 @@ mod wayland {
         use dbus::message::MatchRule;
         use serde::Deserialize;
         use std::io::Write;
+        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
@@ -304,13 +305,19 @@ mod wayland {
             pid: Option<u32>,
         }
 
-        /// Conexión receptora + caché de la última ventana focada notificada.
+        /// Backend: conexión de escucha (destino del `callDBus` del script),
+        /// su nombre único, una conexión dedicada a KWin para el muestreo y la
+        /// caché de la última ventana focada.
         struct Backend {
             conn: SyncConnection,
+            unique: String,
+            kwin: SyncConnection,
             cache: Arc<Mutex<Option<ActiveWindow>>>,
         }
 
         static BACKEND: Mutex<Option<Backend>> = Mutex::new(None);
+        /// Secuencia para nombres de script únicos (evita "nombre duplicado").
+        static SAMPLE_SEQ: AtomicU32 = AtomicU32::new(0);
 
         pub fn active_window() -> Option<ActiveWindow> {
             // Inicializa el backend KDE la primera vez que se consulta.
@@ -326,11 +333,22 @@ mod wayland {
                     }
                 }
             }
+
             let backend_guard = BACKEND.lock().ok()?;
-            let backend = backend_guard.as_ref()?;
-            // Drena los mensajes "result" pendientes y actualiza la caché.
-            let _ = backend.conn.process(Duration::from_millis(10));
-            let cached = backend.cache.lock().ok()?;
+            let backend = backend_guard.as_ref();
+
+            // Muestreo activo: en cada consulta cargamos un script de un solo
+            // uso que reporta la ventana activa actual (patrón probado por
+            // kdotool). No dependemos de señales ni timers del scripting de
+            // KWin (varían entre versions de Plasma 6): solo de
+            // loadScript/start/unloadScript, que funcionan en todas.
+            if let Some(b) = backend {
+                sample_once(b);
+                // Drena los mensajes "result" pendientes y actualiza la caché.
+                let _ = b.conn.process(Duration::from_millis(30));
+            }
+
+            let cached = backend?.cache.lock().ok()?;
             if cached.is_none() {
                 dbg("kde: cache vacia (KWin no ha reportado ninguna ventana todavia)");
             } else {
@@ -338,6 +356,108 @@ mod wayland {
                 dbg(format!("kde: ventana en cache: title={:?} process={:?}", w.title, w.process_name));
             }
             cached.clone()
+        }
+
+        /// Escribe, carga, ejecuta y descarga un script KWin de un solo uso que
+        /// reporta la ventana activa en ese momento (título/clase/pid).
+        fn sample_once(backend: &Backend) {
+            let seq = SAMPLE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let script_name = format!("app-monitor-{}-{seq}", std::process::id());
+            let script = format!(
+                r#"function output_result(message) {{
+    callDBus("{}", "/", "", "result", message.toString());
+}}
+try {{
+    var w = workspace.activeWindow;
+    if (w) {{
+        output_result(JSON.stringify({{
+            title: w.caption || "",
+            class: w.resourceClass || "",
+            pid: (typeof w.pid === "number") ? w.pid : 0
+        }}));
+    }} else {{
+        output_result("null");
+    }}
+}} catch (e) {{
+    output_result(JSON.stringify({{ error: String(e) }}));
+}}
+"#,
+                backend.unique
+            );
+            let path = std::env::temp_dir().join(format!("{script_name}.js"));
+            {
+                let mut file = match std::fs::File::create(&path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        dbg(format!("kde: ERROR escribiendo el script en {path:?}: {e}"));
+                        return;
+                    }
+                };
+                if let Err(e) = file.write_all(script.as_bytes()) {
+                    dbg(format!("kde: ERROR escribiendo el contenido del script: {e}"));
+                    return;
+                }
+            }
+
+            let proxy = backend
+                .kwin
+                .with_proxy(KWIN_SERVICE, "/Scripting", Duration::from_millis(5000));
+
+            // 1) Carga.
+            let script_result: Result<(i32,), _> = proxy.method_call(
+                "org.kde.kwin.Scripting",
+                "loadScript",
+                (
+                    path.to_str().unwrap_or_default(),
+                    script_name.as_str(),
+                ),
+            );
+            let script_id = match script_result {
+                Ok((id,)) => id,
+                Err(e) => {
+                    dbg(format!("kde: ERROR loadScript (muestreo): {e}"));
+                    let _ = std::fs::remove_file(&path);
+                    return;
+                }
+            };
+            if script_id < 0 {
+                dbg(format!(
+                    "kde: loadScript devolvio script_id={script_id} < 0 -> scripting no disponible o nombre duplicado"
+                ));
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+
+            // 2) Ejecución (Plasma 6 exige start(); en Plasma 5 puede no existir).
+            let start_result: Result<(), _> = proxy.method_call("org.kde.kwin.Scripting", "start", ());
+            match start_result {
+                Ok(()) => {}
+                Err(e) => dbg(format!("kde: start() no disponible (normal en Plasma 5): {e}")),
+            }
+
+            // 3) Da tiempo a que el script se ejecute y llegue el "result".
+            let _ = backend.conn.process(Duration::from_millis(30));
+
+            // 4) Descarga el script para no dejar acumulados.
+            let unload_result: Result<(bool,), _> = proxy.method_call(
+                "org.kde.kwin.Scripting",
+                "unloadScript",
+                (script_name.as_str(),),
+            );
+            match unload_result {
+                Ok((removed,)) => {
+                    if removed {
+                        dbg(format!("kde: unloadScript({script_name}) OK"));
+                    } else {
+                        dbg(format!(
+                            "kde: unloadScript({script_name}) -> false (no estaba cargado)"
+                        ));
+                    }
+                }
+                Err(e) => dbg(format!("kde: unloadScript fallo (normal en Plasma 5): {e}")),
+            }
+
+            let _ = std::fs::remove_file(&path);
         }
 
         fn spawn() -> Option<Backend> {
@@ -380,92 +500,7 @@ mod wayland {
             // El receptor vive mientras el proceso (backend de app-lifetime).
             Box::leak(Box::new(receiver));
 
-            // 2) Script de KWin: reporta la ventana activa al cargar, en cada cambio de
-//            foco y con un polling de respaldo. OJO (Plasma 6 / KWin 6):
-//            los nombres de las señales de scripting cambian entre versiones
-//            (activeWindowChanged, clientActivated, activeClientChanged...).
-//            Lo detectamos en vivo en Fedora 44: el script moría al conectar
-//            activeWindowChanged ("Cannot call method 'connect' of
-//            undefined"). Por robustez conectamos TODAS las señales conocidas
-//            que existan (try/catch individual) y ademas un setInterval de
-//            respaldo que consulta workspace.activeWindow cada segundo y solo
-//            reporta cuando cambia (deduplicacion por clave).
-            let script = format!(
-                r#"function debug_log(message) {{
-    try {{ print(message); }} catch (e) {{ }}
-}}
-function output_result(message) {{
-    try {{
-        callDBus("{}", "/", "", "result", message.toString());
-    }} catch (e) {{
-        debug_log("app-monitor: callDBus fallo: " + e);
-    }}
-}}
-function window_key(w) {{
-    return w ? (w.caption || "") + "|" + (w.resourceClass || "") + "|" + w.pid : "";
-}}
-var last_key = "";
-function report(force) {{
-    try {{
-        var w = workspace.activeWindow;
-        var key = window_key(w);
-        if (force || key !== last_key) {{
-            last_key = key;
-            if (w) {{
-                output_result(JSON.stringify({{
-                    title: w.caption || "",
-                    class: w.resourceClass || "",
-                    pid: (typeof w.pid === "number") ? w.pid : 0
-                }}));
-            }} else {{
-                output_result("null");
-            }}
-        }}
-    }} catch (e) {{
-        debug_log("app-monitor: report fallo: " + e);
-    }}
-}}
-// Conecta todas las senales de foco conocidas de KWin (5 y 6); cada una
-// protegida por si no existe en esta version.
-var signal_names = ["clientActivated", "activeWindowChanged", "activeClientChanged", "clientListChanged"];
-for (var i = 0; i < signal_names.length; i++) {{
-    try {{
-        var sig = workspace[signal_names[i]];
-        if (sig && sig.connect) {{
-            sig.connect(report);
-            debug_log("app-monitor: senal conectada: " + signal_names[i]);
-        }}
-    }} catch (e) {{ }}
-}}
-// Respaldo: comprueba cada segundo y reporta solo si cambio el foco.
-try {{
-    setInterval(function () {{ report(false); }}, 1000);
-}} catch (e) {{
-    debug_log("app-monitor: setInterval no disponible: " + e);
-}}
-report(true);
-"#,
-                unique
-            );
-
-            let script_name = format!("app-monitor-{}", std::process::id());
-            let path = std::env::temp_dir().join(format!("{script_name}.js"));
-            {
-                let mut file = match std::fs::File::create(&path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        dbg(format!("kde: ERROR escribiendo el script en {path:?}: {e}"));
-                        return None;
-                    }
-                };
-                if let Err(e) = file.write_all(script.as_bytes()) {
-                    dbg(format!("kde: ERROR escribiendo el contenido del script: {e}"));
-                    return None;
-                }
-                dbg(format!("kde: script escrito en {path:?}"));
-            }
-
-            // 3) Carga del script en KWin (org.kde.KWin /Scripting).
+            // 2) Conexión D-Bus dedicada a KWin (para loadScript/start/unload).
             let kwin = match SyncConnection::new_session() {
                 Ok(c) => c,
                 Err(e) => {
@@ -473,48 +508,9 @@ report(true);
                     return None;
                 }
             };
-            let proxy = kwin.with_proxy(KWIN_SERVICE, "/Scripting", Duration::from_millis(5000));
-            let script_result: Result<(i32,), _> = proxy.method_call(
-                "org.kde.kwin.Scripting",
-                "loadScript",
-                (
-                    path.to_str().unwrap_or_default(),
-                    script_name.as_str(),
-                ),
-            );
-            match script_result {
-                Ok((script_id,)) => {
-                    if script_id < 0 {
-                        dbg(format!(
-                            "kde: loadScript devolvio script_id={script_id} < 0 -> scripting no disponible o nombre duplicado"
-                        ));
-                        return None;
-                    }
-                    dbg(format!("kde: loadScript OK, script_id = {script_id}"));
 
-                    // Plasma 6: loadScript registra el script pero NO lo ejecuta;
-                    // hay que llamar a start() para que corra. En Plasma 5 el
-                    // script corre solo al cargarse y start() puede no existir,
-                    // por lo que si falla lo toleramos con un log.
-                    let start_result: Result<(), _> = proxy
-                        .method_call("org.kde.kwin.Scripting", "start", ());
-                    match start_result {
-                        Ok(()) => dbg("kde: start() OK, script en ejecucion"),
-                        Err(e) => dbg(format!(
-                            "kde: start() no disponible (normal en Plasma 5): {e}"
-                        )),
-                    }
-                }
-                Err(e) => {
-                    dbg(format!("kde: ERROR llamada loadScript a KWin: {e}"));
-                    return None;
-                }
-            }
-            // KWin ya leyó el fichero en loadScript (como hace kdotool).
-            let _ = std::fs::remove_file(&path);
             dbg("kde: backend KWin inicializado correctamente");
-
-            Some(Backend { conn, cache })
+            Some(Backend { conn, unique, kwin, cache })
         }
 
         /// Parsea el payload JSON enviado por el script de KWin.
