@@ -381,19 +381,48 @@ mod wayland {
             Box::leak(Box::new(receiver));
 
             // 2) Script de KWin: reporta al cargar y en cada cambio de foco.
+            // OJO (Plasma 6): la señal por defecto de scripting cambió — en
+            // KWin 6 la señal además de activeWindowChanged es clientActivated,
+            // y activeWindowChanged puede no existir (lo detectamos en vivo en
+            // Fedora 44 / Plasma 6: "Cannot call method 'connect' of
+            // undefined"). El script conecta la primera que exista y protege
+            // cada paso con try/catch para no morir en silencio.
             let script = format!(
-                r#"function output_result(message) {{
-    callDBus("{}", "/", "", "result", message.toString());
+                r#"function debug_log(message) {{
+    try {{ print(message); }} catch (e) {{ }}
 }}
-function report() {{
-    const w = workspace.activeWindow;
-    if (w) {{
-        output_result(JSON.stringify({{ title: w.caption, class: w.resourceClass, pid: w.pid }}));
-    }} else {{
-        output_result("null");
+function output_result(message) {{
+    try {{
+        callDBus("{}", "/", "", "result", message.toString());
+    }} catch (e) {{
+        debug_log("app-monitor: callDBus fallo: " + e);
     }}
 }}
-workspace.activeWindowChanged.connect(report);
+function report() {{
+    try {{
+        var w = workspace.activeWindow;
+        if (w) {{
+            output_result(JSON.stringify({{
+                title: w.caption || "",
+                class: w.resourceClass || "",
+                pid: (typeof w.pid === "number") ? w.pid : 0
+            }}));
+        }} else {{
+            output_result("null");
+        }}
+    }} catch (e) {{
+        debug_log("app-monitor: report fallo: " + e);
+    }}
+}}
+try {{
+    workspace.clientActivated.connect(report);
+}} catch (e) {{
+    try {{
+        workspace.activeWindowChanged.connect(report);
+    }} catch (e2) {{
+        debug_log("app-monitor: no se pudo conectar ninguna senal de foco: " + e2);
+    }}
+}}
 report();
 "#,
                 unique
