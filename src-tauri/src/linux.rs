@@ -447,12 +447,9 @@ report();
                     // hay que llamar a start() para que corra. En Plasma 5 el
                     // script corre solo al cargarse y start() puede no existir,
                     // por lo que si falla lo toleramos con un log.
-                    let start_proxy = kwin.with_proxy::<()>(
-                        KWIN_SERVICE,
-                        "/Scripting",
-                        Duration::from_millis(5000),
-                    );
-                    match start_proxy.method_call("org.kde.kwin.Scripting", "start", ()) {
+                    let start_result: Result<(), _> = proxy
+                        .method_call("org.kde.kwin.Scripting", "start", ());
+                    match start_result {
                         Ok(()) => dbg("kde: start() OK, script en ejecucion"),
                         Err(e) => dbg(format!(
                             "kde: start() no disponible (normal en Plasma 5): {e}"
