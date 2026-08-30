@@ -1,6 +1,6 @@
 [package]
 name = "app-monitor"
-version = "0.1.6"
+version = "0.1.7"
 description = "App Monitor - monitorización de uso de aplicaciones"
 authors = ["you"]
 edition = "2021"
