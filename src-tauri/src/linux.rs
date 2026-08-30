@@ -425,7 +425,7 @@ report();
                 }
             };
             let proxy = kwin.with_proxy(KWIN_SERVICE, "/Scripting", Duration::from_millis(5000));
-            let script_result = proxy.method_call(
+            let script_result: Result<(i32,), _> = proxy.method_call(
                 "org.kde.kwin.Scripting",
                 "loadScript",
                 (
