@@ -529,6 +529,8 @@ report();
             None
         }
 
+        /// Árbol de ejemplo para el test: pid 0 nunca resuelve un proceso real,
+        /// así que la resolución cae al app_id ("foot") de forma determinista.
         #[cfg(test)]
         pub(crate) fn sample_tree() -> Json {
             serde_json::json!({
@@ -538,11 +540,11 @@ report();
                     {
                         "name": "Terminal",
                         "app_id": "foot",
-                        "pid": 4242,
+                        "pid": 0,
                         "focused": true,
                         "nodes": []
                     },
-                    { "name": "Browser", "app_id": "firefox", "pid": 100, "focused": false, "nodes": [] }
+                    { "name": "Browser", "app_id": "firefox", "pid": 0, "focused": false, "nodes": [] }
                 ],
                 "floating_nodes": []
             })
@@ -592,11 +594,11 @@ mod tests {
 
     #[test]
     fn kde_parses_window_payload() {
-        let win = wayland::kde::parse_payload(r#"{"title":"Konsole","class":"konsole","pid":1234}"#);
+        let win = wayland::kde::parse_payload(r#"{"title":"Konsole","class":"konsole","pid":0}"#);
         assert!(win.is_some());
         let win = win.unwrap();
         assert_eq!(win.title, "Konsole");
-        // pid 1234 no existe -> cae a la clase de la ventana.
+        // pid 0 nunca resuelve un proceso real -> cae a la clase de la ventana.
         assert_eq!(win.process_name, "konsole");
     }
 
