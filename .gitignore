@@ -42,3 +42,22 @@ next-env.d.ts
 
 # instaladores locales de prueba (nunca subir binarios)
 /dist-linux/
+
+# Ficheros ejecutables
+*.bat
+*.exe
+
+# Ficheros md
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
+# Fichero json y jsonc
+opencode.jsonc
+.mcp.json
+
+# Otros
+Sesiones de Hermes.txt
+/.claude/
+/.codegraph/
+/.gemini/
