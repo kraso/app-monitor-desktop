@@ -545,12 +545,13 @@ try {{
         pub fn active_window() -> Option<ActiveWindow> {
             let conn = session()?;
 
-            // 1) API clásica org.gnome.Shell.Introspect (GNOME <= 45).
+            // 1) org.gnome.Shell.Introspect.GetWindows.
             if let Some(win) = introspect_window(&conn) {
                 return Some(win);
             }
 
-            // 2) Fallback: org.gnome.Shell.Eval (GNOME 46+ eliminó Introspect).
+            // 2) Fallback: org.gnome.Shell.Eval (disponible en algunas distros;
+            //    en Ubuntu 24.04 está restringido por política D-Bus).
             if let Some(win) = eval_window(&conn) {
                 return Some(win);
             }
@@ -559,7 +560,9 @@ try {{
             None
         }
 
-        /// GNOME <= 45: org.gnome.Shell.Introspect.GetWindows con foco.
+        /// GNOME <= 45 y 46+: org.gnome.Shell.Introspect.GetWindows.
+        /// OJO (GNOME 46): el método ya NO acepta la opción a{sv} (firma "()");
+        /// devuelve todas las ventanas y el foco se filtra por el campo "focus".
         fn introspect_window(conn: &Connection) -> Option<ActiveWindow> {
             let proxy = match Proxy::new(
                 conn,
@@ -574,22 +577,43 @@ try {{
                 }
             };
 
-            // Con la opción "focus", GNOME devuelve solo la ventana con foco.
-            let mut options = HashMap::new();
-            options.insert("focus".to_string(), Value::Bool(true));
-            let windows: Vec<HashMap<String, OwnedValue>> = match proxy
-                .call("GetWindows", &(&options,))
-            {
+            // Sin opciones (GNOME 46+); devuelve todas las ventanas.
+            let windows: Vec<HashMap<String, OwnedValue>> = match proxy.call("GetWindows", &()) {
                 Ok(w) => w,
                 Err(e) => {
                     dbg(format!("gnome: Introspect.GetWindows fallo: {e}"));
                     return None;
                 }
             };
-            let win = windows.into_iter().next()?;
-            let title = str_field(&win, "title").unwrap_or_default();
-            let pid = int_field(&win, "pid");
-            let class = str_field(&win, "class").or_else(|| str_field(&win, "app-id"));
+            dbg(format!(
+                "gnome: Introspect devolvio {} ventanas",
+                windows.len()
+            ));
+            if windows.is_empty() {
+                dbg("gnome: Introspect sin ventanas");
+                return None;
+            }
+
+            // Busca la ventana marcada con foco (campo "focus": true).
+            let focused = windows
+                .iter()
+                .find(|w| match w.get("focus").map(|v| &**v) {
+                    Some(Value::Bool(b)) => *b,
+                    _ => false,
+                });
+            // Si ninguna lo está, loguea las claves de la primera (útil para
+            // saber el esquema real sin recompilar) y usa la primera.
+            let win = match focused.or_else(|| windows.first()) {
+                Some(w) => w,
+                None => return None,
+            };
+            if focused.is_none() {
+                let keys: Vec<&String> = win.keys().collect();
+                dbg(format!("gnome: sin ventana con focus; claves: {keys:?}"));
+            }
+            let title = str_field(win, "title").unwrap_or_default();
+            let pid = int_field(win, "pid");
+            let class = str_field(win, "class").or_else(|| str_field(win, "app-id"));
             let process_name = resolve_process(pid, class).unwrap_or_default();
             dbg(format!(
                 "gnome: Introspect OK -> title={title:?} process={process_name:?}"
@@ -597,10 +621,11 @@ try {{
             Some(ActiveWindow { title, process_name })
         }
 
-        /// GNOME 46+: org.gnome.Shell.Eval — evalúa JS en el shell y devuelve el
-        /// valor de la última expresión (la forma estándar de leer la ventana
-        /// focada; así lo usan las extensiones). La interfaz Introspect fue
-        /// eliminada en GNOME 46, por eso este fallback.
+        /// Fallback alternativo: org.gnome.Shell.Eval — evalúa JS en el shell y
+        /// devuelve el valor de la última expresión. Disponible en algunas
+        /// distros configuraciones; en Ubuntu 24.04 la política D-Bus de
+        /// gnome-shell lo restringe (responde (false, "")), por lo que este
+        /// fallback suele quedar sin efecto ahí.
         fn eval_window(conn: &Connection) -> Option<ActiveWindow> {
             let proxy = match Proxy::new(
                 conn,
