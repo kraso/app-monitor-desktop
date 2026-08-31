@@ -44,13 +44,25 @@ pub fn get_active_window() -> Option<ActiveWindow> {
         std::env::var_os("DISPLAY"),
         std::env::var_os("SWAYSOCK"),
     ));
-    let result = if is_wayland_session() {
+    let mut result = if is_wayland_session() {
         dbg("entorno: sesion Wayland -> backend wayland");
         wayland::active_window()
     } else {
         dbg("entorno: sesion X11 -> backend x11");
         x11::active_window()
     };
+
+    // Fallback X11/XWayland: en GNOME 46+ (Ubuntu 24.04) tanto
+    // Introspect.GetWindows como Shell.Eval están bloqueados por política
+    // D-Bus (AccessDenied) para apps de terceros. Si la sesión es Wayland
+    // pero el backend nativo no dio ventana y hay un DISPLAY (XWayland),
+    // probamos la vía EWMH: al menos las aplicaciones X11/XWayland quedan
+    // monitorizadas (las nativas de Wayland no son visibles por X11).
+    if result.is_none() && is_wayland_session() && std::env::var_os("DISPLAY").is_some() {
+        dbg("wayland sin datos -> probando fallback X11/XWayland (EWMH)");
+        result = x11::active_window();
+    }
+
     dbg(format!(
         "get_active_window -> {:?}",
         result.as_ref().map(|w| (&w.title, &w.process_name))
@@ -164,6 +176,15 @@ mod x11 {
                 .and_then(process_name_for_pid)
                 .unwrap_or_else(|| String::from("unknown"));
 
+            // Filtro anti-basura: en Wayland con XWayland, _NET_ACTIVE_WINDOW
+            // puede apuntar a una ventana fantasma sin título ni PID (clientes
+            // nativos Wayland no son visibles por X11). Una ventana sin título
+            // y sin proceso no es monitorizable: devolvemos None en vez de
+            // contaminar el historial con sesiones vacías/unknown.
+            if title.is_empty() && process_name == "unknown" {
+                return Err(());
+            }
+
             Ok(ActiveWindow { title, process_name })
         })
     }
@@ -246,7 +267,16 @@ mod wayland {
 
         if desktop.contains("gnome") || desktop.contains("unity") {
             dbg("wayland: compositor detectado = GNOME/Unity");
-            return gnome::active_window();
+            // 1) Introspect (GNOME ≤ 45 o distros sin bloqueo).
+            if let Some(win) = gnome::active_window() {
+                return Some(win);
+            }
+            // 2) Extensión propia (GNOME 46+): ventana focada nativa Wayland.
+            if let Some(win) = gnome_ext::active_window() {
+                return Some(win);
+            }
+            dbg("wayland: GNOME nativo y extension sin datos -> None (cae al fallback X11)");
+            return None;
         }
         if desktop.contains("sway") || std::env::var_os("SWAYSOCK").is_some() {
             dbg("wayland: compositor detectado = Sway");
@@ -533,7 +563,7 @@ try {{
     /// GNOME Shell (X11 o Wayland): Introspect + Mutter IdleMonitor.
     /// -----------------------------------------------------------------------
     mod gnome {
-        use super::{resolve_process, ActiveWindow};
+        use super::{dbg, resolve_process, ActiveWindow};
         use std::collections::HashMap;
         use zbus::blocking::{Connection, Proxy};
         use zbus::zvariant::{OwnedValue, Value};
@@ -544,27 +574,151 @@ try {{
 
         pub fn active_window() -> Option<ActiveWindow> {
             let conn = session()?;
-            let proxy = Proxy::new(
-                &conn,
+
+            // 1) org.gnome.Shell.Introspect.GetWindows.
+            if let Some(win) = introspect_window(&conn) {
+                return Some(win);
+            }
+
+            // 2) Fallback: org.gnome.Shell.Eval (disponible en algunas distros;
+            //    en Ubuntu 24.04 está restringido por política D-Bus).
+            if let Some(win) = eval_window(&conn) {
+                return Some(win);
+            }
+
+            dbg("gnome: sin ventana activa (Introspect y Eval agotados)");
+            None
+        }
+
+        /// GNOME <= 45 y 46+: org.gnome.Shell.Introspect.GetWindows.
+        /// OJO (GNOME 46): el método ya NO acepta la opción a{sv} (firma "()");
+        /// devuelve todas las ventanas y el foco se filtra por el campo "focus".
+        fn introspect_window(conn: &Connection) -> Option<ActiveWindow> {
+            let proxy = match Proxy::new(
+                conn,
                 "org.gnome.Shell",
                 "/org/gnome/Shell/Introspect",
                 "org.gnome.Shell.Introspect",
-            )
-            .ok()?;
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    dbg(format!("gnome: Introspect no disponible: {e}"));
+                    return None;
+                }
+            };
 
-            // Con la opción "focus", GNOME devuelve solo la ventana con foco.
-            let mut options = HashMap::new();
-            options.insert("focus".to_string(), Value::Bool(true));
-            let windows: Vec<HashMap<String, OwnedValue>> =
-                proxy.call("GetWindows", &(&options,)).ok()?;
+            // Sin opciones (GNOME 46+); devuelve todas las ventanas.
+            let windows: Vec<HashMap<String, OwnedValue>> = match proxy.call("GetWindows", &()) {
+                Ok(w) => w,
+                Err(e) => {
+                    dbg(format!("gnome: Introspect.GetWindows fallo: {e}"));
+                    return None;
+                }
+            };
+            dbg(format!(
+                "gnome: Introspect devolvio {} ventanas",
+                windows.len()
+            ));
+            if windows.is_empty() {
+                dbg("gnome: Introspect sin ventanas");
+                return None;
+            }
 
-            let win = windows.into_iter().next()?;
-            let title = str_field(&win, "title").unwrap_or_default();
-            let pid = int_field(&win, "pid");
-            let class = str_field(&win, "class")
-                .or_else(|| str_field(&win, "app-id"));
+            // Busca la ventana marcada con foco (campo "focus": true).
+            let focused = windows
+                .iter()
+                .find(|w| match w.get("focus").map(|v| &**v) {
+                    Some(Value::Bool(b)) => *b,
+                    _ => false,
+                });
+            // Si ninguna lo está, loguea las claves de la primera (útil para
+            // saber el esquema real sin recompilar) y usa la primera.
+            let win = match focused.or_else(|| windows.first()) {
+                Some(w) => w,
+                None => return None,
+            };
+            if focused.is_none() {
+                let keys: Vec<&String> = win.keys().collect();
+                dbg(format!("gnome: sin ventana con focus; claves: {keys:?}"));
+            }
+            let title = str_field(win, "title").unwrap_or_default();
+            let pid = int_field(win, "pid");
+            let class = str_field(win, "class").or_else(|| str_field(win, "app-id"));
             let process_name = resolve_process(pid, class).unwrap_or_default();
+            dbg(format!(
+                "gnome: Introspect OK -> title={title:?} process={process_name:?}"
+            ));
+            Some(ActiveWindow { title, process_name })
+        }
 
+        /// Fallback alternativo: org.gnome.Shell.Eval — evalúa JS en el shell y
+        /// devuelve el valor de la última expresión. Disponible en algunas
+        /// distros configuraciones; en Ubuntu 24.04 la política D-Bus de
+        /// gnome-shell lo restringe (responde (false, "")), por lo que este
+        /// fallback suele quedar sin efecto ahí.
+        fn eval_window(conn: &Connection) -> Option<ActiveWindow> {
+            let proxy = match Proxy::new(
+                conn,
+                "org.gnome.Shell",
+                "/org/gnome/Shell",
+                "org.gnome.Shell",
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    dbg(format!("gnome: proxy Shell no disponible: {e}"));
+                    return None;
+                }
+            };
+
+            let script = r#"(() => {
+  const w = global.display.focus_window;
+  if (!w) return "null";
+  return JSON.stringify({
+    title: String(w.title || ""),
+    class: String((w.get_wm_class ? w.get_wm_class() : "") || ""),
+    pid: (w.get_pid ? w.get_pid() : 0)
+  });
+})()"#;
+
+            let result: Result<(bool, String), _> = proxy.call("Eval", &(script,));
+            let (ok, out) = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    dbg(format!("gnome: Eval fallo (puede requerir permisos): {e}"));
+                    return None;
+                }
+            };
+            if !ok {
+                dbg(format!("gnome: Eval devolvio error: {out:?}"));
+                return None;
+            }
+            let payload = out.trim();
+            if payload == "null" || payload.is_empty() {
+                dbg("gnome: Eval -> sin ventana focada");
+                return None;
+            }
+
+            // Eval devuelve el JSON entre comillas; lo extraemos con un parse
+            // tolerante buscando el primer '{' y el último '}'.
+            let start = payload.find('{')?;
+            let end = payload.rfind('}')?;
+            let json: serde_json::Value = serde_json::from_str(&payload[start..=end]).ok()?;
+
+            let title = json
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let class = json
+                .get("class")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let pid = json.get("pid").and_then(serde_json::Value::as_u64).map(|p| p as u32);
+            let process_name = resolve_process(pid, Some(class)).unwrap_or_default();
+            dbg(format!(
+                "gnome: Eval OK -> title={title:?} process={process_name:?}"
+            ));
             Some(ActiveWindow { title, process_name })
         }
 
@@ -601,6 +755,68 @@ try {{
                 Some(Value::I32(n)) if *n >= 0 => Some(*n as u32),
                 _ => None,
             }
+        }
+    }
+
+    /// -----------------------------------------------------------------------
+    /// GNOME: extensión propia "app-monitor@kraso.dev".
+    ///
+    /// En GNOME 46+ (Ubuntu 24.04) Introspect.GetWindows y Shell.Eval están
+    /// bloqueados por política D-Bus para apps de terceros. La extensión de
+    /// GNOME Shell (gnome-extension/ en el repo) expone la ventana focada
+    /// NATIVA de Wayland por D-Bus (org.gnome.Shell.Introspect solo ve salidas
+    /// X11/XWayland). Si la extensión no está instalada, la app cae al fallback
+    /// X11/XWayland (vía comercio) — por eso conviene instalarla para cobertura
+    /// completa en GNOME Wayland.
+    /// -----------------------------------------------------------------------
+    mod gnome_ext {
+        use super::{dbg, resolve_process, ActiveWindow};
+        use zbus::blocking::{Connection, Proxy};
+
+        /// Bus service, object path e interfaz de la extensión. El objeto D-Bus se
+        /// exporta en la conexión de sesión de GNOME Shell, así que la app lo
+        /// consume contra el nombre bien conocido "org.gnome.Shell" + el
+        /// object path de la extensión (la API de nombre propio D-Bus
+        /// Gio.bus_own_name_on_session se eliminó de GJS en GNOME 46+).
+        const BUS_NAME: &str = "org.gnome.Shell";
+        const OBJECT_PATH: &str = "/com/appmonitor/desktop/WindowInfo";
+        const INTERFACE: &str = "com.appmonitor.desktop.WindowInfo";
+
+        pub fn active_window() -> Option<ActiveWindow> {
+            let conn = match Connection::session() {
+                Ok(c) => c,
+                Err(e) => {
+                    dbg(format!("gnome_ext: sin bus de sesion: {e}"));
+                    return None;
+                }
+            };
+            let proxy = match Proxy::new(&conn, BUS_NAME, OBJECT_PATH, INTERFACE) {
+                Ok(p) => p,
+                Err(e) => {
+                    dbg(format!("gnome_ext: proxy no disponible: {e}"));
+                    return None;
+                }
+            };
+            let result: Result<(String, String, u32), _> =
+                proxy.call("GetActiveWindow", &());
+            let (title, wm_class, pid) = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    dbg(format!(
+                        "gnome_ext: GetActiveWindow fallo (extension no instalada?): {e}"
+                    ));
+                    return None;
+                }
+            };
+            if title.is_empty() && wm_class.is_empty() && pid == 0 {
+                dbg("gnome_ext: sin ventana focada");
+                return None;
+            }
+            let process_name = resolve_process(Some(pid), Some(wm_class)).unwrap_or_default();
+            dbg(format!(
+                "gnome_ext: OK -> title={title:?} process={process_name:?}"
+            ));
+            Some(ActiveWindow { title, process_name })
         }
     }
 

@@ -1,0 +1,8 @@
+{
+  "uuid": "app-monitor@kraso.dev",
+  "name": "App Monitor - Window Snapshot",
+  "description": "Expone la ventana activa de GNOME Shell por D-Bus para que App Monitor pueda monitorizar las aplicaciones nativas de Wayland (bloqueadas por política en GNOME 46+).",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/rubengalansanz/app-monitor-desktop",
+  "version": 1
+}
