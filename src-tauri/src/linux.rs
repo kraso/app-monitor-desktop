@@ -533,7 +533,7 @@ try {{
     /// GNOME Shell (X11 o Wayland): Introspect + Mutter IdleMonitor.
     /// -----------------------------------------------------------------------
     mod gnome {
-        use super::{resolve_process, ActiveWindow};
+        use super::{dbg, resolve_process, ActiveWindow};
         use std::collections::HashMap;
         use zbus::blocking::{Connection, Proxy};
         use zbus::zvariant::{OwnedValue, Value};
@@ -544,27 +544,126 @@ try {{
 
         pub fn active_window() -> Option<ActiveWindow> {
             let conn = session()?;
-            let proxy = Proxy::new(
-                &conn,
+
+            // 1) API clásica org.gnome.Shell.Introspect (GNOME <= 45).
+            if let Some(win) = introspect_window(&conn) {
+                return Some(win);
+            }
+
+            // 2) Fallback: org.gnome.Shell.Eval (GNOME 46+ eliminó Introspect).
+            if let Some(win) = eval_window(&conn) {
+                return Some(win);
+            }
+
+            dbg("gnome: sin ventana activa (Introspect y Eval agotados)");
+            None
+        }
+
+        /// GNOME <= 45: org.gnome.Shell.Introspect.GetWindows con foco.
+        fn introspect_window(conn: &Connection) -> Option<ActiveWindow> {
+            let proxy = match Proxy::new(
+                conn,
                 "org.gnome.Shell",
                 "/org/gnome/Shell/Introspect",
                 "org.gnome.Shell.Introspect",
-            )
-            .ok()?;
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    dbg(format!("gnome: Introspect no disponible: {e}"));
+                    return None;
+                }
+            };
 
             // Con la opción "focus", GNOME devuelve solo la ventana con foco.
             let mut options = HashMap::new();
             options.insert("focus".to_string(), Value::Bool(true));
-            let windows: Vec<HashMap<String, OwnedValue>> =
-                proxy.call("GetWindows", &(&options,)).ok()?;
-
+            let windows: Vec<HashMap<String, OwnedValue>> = match proxy
+                .call("GetWindows", &(&options,))
+            {
+                Ok(w) => w,
+                Err(e) => {
+                    dbg(format!("gnome: Introspect.GetWindows fallo: {e}"));
+                    return None;
+                }
+            };
             let win = windows.into_iter().next()?;
             let title = str_field(&win, "title").unwrap_or_default();
             let pid = int_field(&win, "pid");
-            let class = str_field(&win, "class")
-                .or_else(|| str_field(&win, "app-id"));
+            let class = str_field(&win, "class").or_else(|| str_field(&win, "app-id"));
             let process_name = resolve_process(pid, class).unwrap_or_default();
+            dbg(format!(
+                "gnome: Introspect OK -> title={title:?} process={process_name:?}"
+            ));
+            Some(ActiveWindow { title, process_name })
+        }
 
+        /// GNOME 46+: org.gnome.Shell.Eval — evalúa JS en el shell y devuelve el
+        /// valor de la última expresión (la forma estándar de leer la ventana
+        /// focada; así lo usan las extensiones). La interfaz Introspect fue
+        /// eliminada en GNOME 46, por eso este fallback.
+        fn eval_window(conn: &Connection) -> Option<ActiveWindow> {
+            let proxy = match Proxy::new(
+                conn,
+                "org.gnome.Shell",
+                "/org/gnome/Shell",
+                "org.gnome.Shell",
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    dbg(format!("gnome: proxy Shell no disponible: {e}"));
+                    return None;
+                }
+            };
+
+            let script = r#"(() => {
+  const w = global.display.focus_window;
+  if (!w) return "null";
+  return JSON.stringify({
+    title: String(w.title || ""),
+    class: String((w.get_wm_class ? w.get_wm_class() : "") || ""),
+    pid: (w.get_pid ? w.get_pid() : 0)
+  });
+})()"#;
+
+            let result: Result<(bool, String), _> = proxy.call("Eval", &(script,));
+            let (ok, out) = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    dbg(format!("gnome: Eval fallo (puede requerir permisos): {e}"));
+                    return None;
+                }
+            };
+            if !ok {
+                dbg(format!("gnome: Eval devolvio error: {out:?}"));
+                return None;
+            }
+            let payload = out.trim();
+            if payload == "null" || payload.is_empty() {
+                dbg("gnome: Eval -> sin ventana focada");
+                return None;
+            }
+
+            // Eval devuelve el JSON entre comillas; lo extraemos con un parse
+            // tolerante buscando el primer '{' y el último '}'.
+            let start = payload.find('{')?;
+            let end = payload.rfind('}')?;
+            let json: serde_json::Value = serde_json::from_str(&payload[start..=end]).ok()?;
+
+            let title = json
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let class = json
+                .get("class")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let pid = json.get("pid").and_then(serde_json::Value::as_u64).map(|p| p as u32);
+            let process_name = resolve_process(pid, Some(class)).unwrap_or_default();
+            dbg(format!(
+                "gnome: Eval OK -> title={title:?} process={process_name:?}"
+            ));
             Some(ActiveWindow { title, process_name })
         }
 
