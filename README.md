@@ -24,7 +24,7 @@ Monitorización de sesiones operativa con persistencia local:
 |---|---|
 | **Windows** | Completa (ventana activa + inactividad + bloqueo/suspensión, Win32) |
 | **Linux · X11** (GNOME/KDE/otros) | Ventana activa vía EWMH (`_NET_ACTIVE_WINDOW`) + inactividad vía XScreenSaver |
-| **Linux · Wayland/GNOME** | Ventana focada vía D-Bus (`org.gnome.Shell.Introspect`) + inactividad (`org.gnome.Mutter.IdleMonitor`) |
+| **Linux · Wayland/GNOME** | Ventana focada vía D-Bus (`org.gnome.Shell.Introspect`, GNOME ≤ 45; en GNOME 46+ la política lo bloquea y se usa **fallback X11/XWayland**) + inactividad (`org.gnome.Mutter.IdleMonitor`) |
 | **Linux · Wayland/Sway** | Ventana focada vía el IPC de sway (`get_tree`) |
 | **Linux · Wayland/KDE Plasma 6** | Ventana focada vía KWin Scripting: muestreo por recarga de `workspace.activeWindow` (`loadScript` + `start` + `unloadScript` por tick, patrón de kdotool) — **validado en vivo (Fedora 44 / Plasma 6)** |
 | **macOS** | Sin captura nativa aún (los instaladores se generan igualmente) |
@@ -36,6 +36,12 @@ Notas consabidas:
 - En entornos sin backend nativo la app funciona normal, simplemente sin datos.
 - La persistencia queda inactiva silenciosamente fuera de Tauri (p. ej. `next dev` en navegador).
 - Backend KDE: validado en vivo sobre un escritorio KDE Plasma 6 real (Fedora 44, sesión Wayland); el backend es **muestreo por recarga** y no depende de señales ni timers del scripting de KWin (ver abajo).
+- Backend GNOME (Wayland, GNOME 46+ / Ubuntu 24.04): `Introspect.GetWindows` y `Shell.Eval` están **bloqueados por política D-Bus** para apps de terceros; la app usa **fallback X11/XWayland**, así que solo monitoriza las aplicaciones XWayland (las nativas Wayland no son visibles por X11). La cobertura completa en GNOME moderno requiere una extensión de GNOME Shell (como hace ActivityWatch) — pendiente de decidir.
+
+### Backend GNOME (Wayland)
+
+- **GNOME ≤ 45**: ventana focada vía `org.gnome.Shell.Introspect.GetWindows` (D-Bus de `gnome-shell`); inactividad vía `org.gnome.Mutter.IdleMonitor`.
+- **GNOME 46+ (p. ej. Ubuntu 24.04)**: `GetWindows` y `Shell.Eval` responden `AccessDenied`/bloqueados por política de privacidad (validado en vivo). La app degrada con el **fallback X11/XWayland** (EWMH `_NET_ACTIVE_WINDOW`) cuando existe `DISPLAY`: las aplicaciones XWayland quedan monitorizadas (Firefox/Chrome con X11, apps sin soporte Wayland nativo), pero las nativas Wayland no son visibles por X11. La solución completa en GNOME moderno sería una extensión de GNOME Shell que exponga la ventana focada por D-Bus (patrón de ActivityWatch).
 
 ### Backend KDE (Plasma 6, Wayland)
 
