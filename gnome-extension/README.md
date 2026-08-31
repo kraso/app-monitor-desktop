@@ -31,7 +31,7 @@ gnome-extensions info app-monitor@kraso.dev
 
 ```bash
 gdbus call --session \
-  --dest com.appmonitor.desktop.WindowInfo \
+  --dest org.gnome.Shell \
   --object-path /com/appmonitor/desktop/WindowInfo \
   --method com.appmonitor.desktop.WindowInfo.GetActiveWindow
 ```

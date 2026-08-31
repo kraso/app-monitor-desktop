@@ -773,8 +773,12 @@ try {{
         use super::{dbg, resolve_process, ActiveWindow};
         use zbus::blocking::{Connection, Proxy};
 
-        /// Bus service, obdp y interfaz que exporta la extensión.
-        const BUS_NAME: &str = "com.appmonitor.desktop.WindowInfo";
+        /// Bus service, object path e interfaz de la extensión. El objeto D-Bus se
+        /// exporta en la conexión de sesión de GNOME Shell, así que la app lo
+        /// consume contra el nombre bien conocido "org.gnome.Shell" + el
+        /// object path de la extensión (la API de nombre propio D-Bus
+        /// Gio.bus_own_name_on_session se eliminó de GJS en GNOME 46+).
+        const BUS_NAME: &str = "org.gnome.Shell";
         const OBJECT_PATH: &str = "/com/appmonitor/desktop/WindowInfo";
         const INTERFACE: &str = "com.appmonitor.desktop.WindowInfo";
 
