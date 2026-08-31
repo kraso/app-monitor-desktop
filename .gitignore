@@ -43,6 +43,7 @@ next-env.d.ts
 # instaladores locales de prueba (nunca subir binarios)
 /dist-linux/
 
+# herramientas locales de desarrollo (IA / agentes) — no forman parte del proyecto
 # Ficheros ejecutables
 *.bat
 *.exe
@@ -60,4 +61,8 @@ opencode.jsonc
 Sesiones de Hermes.txt
 /.claude/
 /.codegraph/
+/.cursor/
 /.gemini/
+
+# lockfile de yarn (el proyecto se gestiona con npm: ver package-lock.json)
+/yarn.lock
