@@ -90,6 +90,24 @@ Tras `npm run tauri build`, quedan en `src-tauri/target/release/bundle/`:
 - **Linux:** `deb/`, `rpm/` y `appimage/`.
 - **macOS:** `dmg/` y `app/` (Intel y Apple Silicon).
 
+> **¿Qué instalador elegir en Linux?**
+>
+> - **Debian/Ubuntu:** usa el **`.deb`** — enlaza con las librerías del sistema
+>   (GLib/GTK/WebKitGTK) y es la vía recomendada en estas distros.
+> - **Otras distros:** usa el **`.rpm`** (Red Hat/Fedora) o el **`.AppImage`**
+>   (portátil, no requiere instalación).
+> - **Notas del AppImage:** empaqueta su propia GLib/GTK (compilada en el runner
+>   del CI, Ubuntu 22.04). En hosts con una GLib más nueva puede emitir warnings
+>   de `gvfs` (`undefined symbol: g_task_set_static_name`) — son inofensivos.
+>   Además, en **máquinas virtuales sin aceleración 3D**, WebKitGTK puede fallar
+>   al crear el contexto EGL (`Could not create default EGL display`); ejecútalo
+>   con renderizado por software:
+>   ```bash
+>   LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 ./App.Monitor_*.AppImage
+>   ```
+>   Conocimiento pendiente: reempaquetar el AppImage sin las librerías de sistema
+>   (`linuxdeploy --exclude-library`) para eliminar el conflicto de GLib.
+
 > Los instaladores **no están firmados**: Windows mostrará SmartScreen y macOS
 > el aviso de Gatekeeper (clic derecho → Abrir la primera vez).
 
