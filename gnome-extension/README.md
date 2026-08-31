@@ -48,5 +48,5 @@ completa de Wayland conviene tener la extensión instalada.
 
 ## Compatibilidad
 
-- Probada con la API de extensiones de GNOME 45 → 48 (`Gio.DBusExportedObject`
+- Probada con la API de extensiones de GNOME 45 → 50 (`Gio.DBusExportedObject`
   + `global.display.focus_window`).
