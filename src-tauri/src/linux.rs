@@ -176,6 +176,15 @@ mod x11 {
                 .and_then(process_name_for_pid)
                 .unwrap_or_else(|| String::from("unknown"));
 
+            // Filtro anti-basura: en Wayland con XWayland, _NET_ACTIVE_WINDOW
+            // puede apuntar a una ventana fantasma sin título ni PID (clientes
+            // nativos Wayland no son visibles por X11). Una ventana sin título
+            // y sin proceso no es monitorizable: devolvemos None en vez de
+            // contaminar el historial con sesiones vacías/unknown.
+            if title.is_empty() && process_name == "unknown" {
+                return Err(());
+            }
+
             Ok(ActiveWindow { title, process_name })
         })
     }
