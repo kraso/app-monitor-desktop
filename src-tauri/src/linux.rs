@@ -44,13 +44,25 @@ pub fn get_active_window() -> Option<ActiveWindow> {
         std::env::var_os("DISPLAY"),
         std::env::var_os("SWAYSOCK"),
     ));
-    let result = if is_wayland_session() {
+    let mut result = if is_wayland_session() {
         dbg("entorno: sesion Wayland -> backend wayland");
         wayland::active_window()
     } else {
         dbg("entorno: sesion X11 -> backend x11");
         x11::active_window()
     };
+
+    // Fallback X11/XWayland: en GNOME 46+ (Ubuntu 24.04) tanto
+    // Introspect.GetWindows como Shell.Eval están bloqueados por política
+    // D-Bus (AccessDenied) para apps de terceros. Si la sesión es Wayland
+    // pero el backend nativo no dio ventana y hay un DISPLAY (XWayland),
+    // probamos la vía EWMH: al menos las aplicaciones X11/XWayland quedan
+    // monitorizadas (las nativas de Wayland no son visibles por X11).
+    if result.is_none() && is_wayland_session() && std::env::var_os("DISPLAY").is_some() {
+        dbg("wayland sin datos -> probando fallback X11/XWayland (EWMH)");
+        result = x11::active_window();
+    }
+
     dbg(format!(
         "get_active_window -> {:?}",
         result.as_ref().map(|w| (&w.title, &w.process_name))
