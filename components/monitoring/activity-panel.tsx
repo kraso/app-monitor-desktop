@@ -4,6 +4,7 @@ import { useMonitoring } from "@/app/use-monitoring";
 import type { ActivityState, SessionView } from "@/features/monitoring/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
+import { formatDuration } from "@/lib/utils/format";
 
 export function ActivityPanel() {
   const { monitoring, active, state, sessions, agentStatus, start, stop } =
@@ -113,12 +114,4 @@ function HistoryList({ sessions }: { sessions: SessionView[] }) {
   );
 }
 
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
+

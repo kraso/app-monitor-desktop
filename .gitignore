@@ -44,13 +44,25 @@ next-env.d.ts
 /dist-linux/
 
 # herramientas locales de desarrollo (IA / agentes) — no forman parte del proyecto
+# Ficheros ejecutables
+*.bat
+*.exe
+
+# Ficheros md
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
+# Fichero json y jsonc
+opencode.jsonc
+.mcp.json
+
+# Otros
+Sesiones de Hermes.txt
 /.claude/
 /.codegraph/
 /.cursor/
 /.gemini/
-/.mcp.json
-/GEMINI.md
-/opencode.jsonc
 
 # lockfile de yarn (el proyecto se gestiona con npm: ver package-lock.json)
 /yarn.lock

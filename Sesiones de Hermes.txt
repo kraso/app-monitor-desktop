@@ -1,6 +1,0 @@
-Conversation snapshot saved to: C:\Users\USUARIO\AppData\Local\hermes\sessions\saved\hermes_conversation_20260810_200057.json
-       Resume the live session with: hermes --resume 20260810_185015_358da9
-
-Conversation snapshot saved to: C:\Users\USUARIO\AppData\Local\hermes\sessions\saved\hermes_conversation_20260811_132046.json
-       Resume the live session with: hermes --resume 20260810_185015_358da9
-
