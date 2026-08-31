@@ -36,13 +36,33 @@ Notas consabidas:
 - En entornos sin backend nativo la app funciona normal, simplemente sin datos.
 - La persistencia queda inactiva silenciosamente fuera de Tauri (p. ej. `next dev` en navegador).
 - Backend KDE: validado en vivo sobre un escritorio KDE Plasma 6 real (Fedora 44, sesión Wayland); el backend es **muestreo por recarga** y no depende de señales ni timers del scripting de KWin (ver abajo).
-- Backend GNOME (Wayland, GNOME 46+ / Ubuntu 24.04): `Introspect.GetWindows` y `Shell.Eval` están **bloqueados por política D-Bus** para apps de terceros; la solución es la **extensión propia** (`gnome-extension/`, UUID `app-monitor@kraso.dev`), que expone la ventana focada **nativa de Wayland** por D-Bus (`org.gnome.Shell` + `/com/appmonitor/desktop/WindowInfo`). Sin extensión, la app cae al **fallback X11/XWayland** (solo aplicaciones X11).
+- Backend GNOME (Wayland, GNOME 46+): `Introspect.GetWindows` y `Shell.Eval` están **bloqueados por política D-Bus** para apps de terceros; la solución es la **extensión propia** (`gnome-extension/`, UUID `app-monitor@kraso.dev`), que expone la ventana focada **nativa de Wayland** por D-Bus. Sin extensión, la app cae al **fallback X11/XWayland** (solo aplicaciones X11).
 
 ### Backend GNOME (Wayland)
 
 - **GNOME ≤ 45**: ventana focada vía `org.gnome.Shell.Introspect.GetWindows` (D-Bus de `gnome-shell`); inactividad vía `org.gnome.Mutter.IdleMonitor`.
-- **GNOME 46+ / 50 (p. ej. Ubuntu 24.04)**: `GetWindows` y `Shell.Eval` responden `AccessDenied`/bloqueados por política de privacidad (validado en vivo). La vía completa es la **extensión propia** incluida en el repo (`gnome-extension/`): exporta `global.display.focus_window` (título/clase WM/pid) en `org.gnome.Shell` y la app la consulta por D-Bus.
-  - Instalación: copia `gnome-extension/` a `~/.local/share/gnome-shell/extensions/app-monitor@kraso.dev/` (URI `app-monitor@kraso.dev`, Shell 45–50), reinicia la sesión y comprueba `gnome-extensions info app-monitor@kraso.dev` → `ACTIVE`.
+- **GNOME 46+ (validado en vivo en GNOME 50.1 / Ubuntu)**: `GetWindows` y `Shell.Eval` responden `AccessDenied`/bloqueados por política de privacidad para apps de terceros. La vía completa es la **extensión propia** incluida en el repo (`gnome-extension/`): exporta `global.display.focus_window` (título/clase WM/pid) en `org.gnome.Shell` y la app la consulta por D-Bus contra el nombre de bus `org.gnome.Shell` + object path `/com/appmonitor/desktop/WindowInfo` (desde GNOME 46 la API `Gio.bus_own_name_on_session` fue eliminada; por eso se exporta bajo el nombre del propio Shell).
+
+  **Instalación de la extensión:**
+  1. Copia la carpeta `gnome-extension/` del repo a `~/.local/share/gnome-shell/extensions/app-monitor@kraso.dev/` (contiene `metadata.json` + `extension.js`).
+  2. **Importante — `shell-version`**: abre `metadata.json` y confirma que tu versión exacta de GNOME Shell esté en la lista `"shell-version"` (p. ej. `"50"`). Si no está, la extensión queda **`OUT OF DATE`** y no carga. Los instaladores y la URL del repo apuntan a `master`, que declara 45–50.
+  3. **Actívala** (el mero copiado no basta):
+     ```bash
+     gnome-extensions enable app-monitor@kraso.dev
+     ```
+  4. Reinicia la sesión (o recarga el shell: `Alt+F2` → `r` en X11; logout/login en Wayland) y comprueba que cargó sin errores:
+     ```bash
+     gnome-extensions info app-monitor@kraso.dev   # → "Activado: Sí" y "Estado: ACTIVE"
+     ```
+  5. Verifica el servicio D-Bus (debe responder con la ventana focada real):
+     ```bash
+     gdbus call --session \
+       --dest org.gnome.Shell \
+       --object-path /com/appmonitor/desktop/WindowInfo \
+       --method com.appmonitor.desktop.WindowInfo.GetActiveWindow
+     # → p. ej. ('Terminal', 'org.gnome.Terminal', uint32 1234)
+     ```
+  - Si el paso 4 muestra `Estado: ERROR`, revisa el log del shell: `journalctl --user -b | grep -iE 'app-monitor|extension'` (un patrón conocido de fallo es usar API de D-Bus eliminada, como `Gio.bus_own_name_on_session`).
   - Sin la extensión, la app degrada al **fallback X11/XWayland** (EWMH `_NET_ACTIVE_WINDOW`): solo monitoriza aplicaciones X11/XWayland (las nativas Wayland no son visibles por X11).
 
 ### Backend KDE (Plasma 6, Wayland)
@@ -151,5 +171,6 @@ src-tauri/        agente nativo Rust (Tauri 2)
 - `npm run lint`: conflicto de peer de `@typescript-eslint` con `typescript@7` (solo afecta al lint, no al build).
 - Instaladores sin firmar (requiere certificados de pago para eliminarlo).
 - Backend KDE Plasma (Wayland): validado en vivo sobre Fedora 44 / Plasma 6 (2026-08-30); la inactividad del usuario en Wayland no-GNOME sigue sin backend nativo.
-- GNOME 46+/50 sin la extensión instalada: solo cobertura X11/XWayland (la extensión `gnome-extension/` da la cobertura completa).
+- GNOME (Wayland, 46+): **requiere la extensión** `gnome-extension/` instalada y activa para monitorizar aplicaciones nativas de Wayland (sin ella, solo cobertura X11/XWayland). Ver "Backend GNOME (Wayland)".
+  - *Deuda propia de la extensión*: declarada para Shell 45–50; en versiones fuera de ese rango queda `OUT OF DATE`. La app consulta siempre `org.gnome.Shell` + object path de la extensión; si la extensión no está, el backend cae al fallback X11/XWayland sin avisar en la UI (el diagnóstico con `APP_MONITOR_DEBUG=1` sí lo muestra).
 - macOS: sin captura nativa de ventana activa (pendiente).
