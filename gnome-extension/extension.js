@@ -1,9 +1,15 @@
 /* App Monitor - Window Snapshot
  *
  * Expone la ventana activa (título, clase WM, pid) de GNOME Shell a través de
- * un servicio D-Bus de sesión propio. Es la forma que mantiene GNOME 46+ para
- * que apps de terceros conozcan la ventana focada NATIVA de Wayland (la
- * política del Shell bloquea Introspect.GetWindows y Shell.Eval).
+ * D-Bus. Es la forma que mantienen GNOME 46+ para que apps de terceros
+ * conozcan la ventana focada NATIVA de Wayland (la política del Shell bloquea
+ * Introspect.GetWindows y Shell.Eval).
+ *
+ * El objeto D-Bus se exporta en la conexión de sesión de GNOME Shell; la app
+ * lo consume contra el nombre bien conocido "org.gnome.Shell" con el
+ * object path de esta extensión (patrón usado por otras extensiones). NO se
+ * adquiere un nombre de bus propio: la API Gio.bus_own_name_on_session se
+ * eliminó de GJS (GNOME 46+) y este enfoque es el estable.
  *
  * Instalación: copia esta carpeta a
  *   ~/.local/share/gnome-shell/extensions/app-monitor@kraso.dev/
@@ -13,7 +19,6 @@
 
 import Gio from 'gi://Gio';
 
-const BUS_NAME = 'com.appmonitor.desktop.WindowInfo';
 const OBJECT_PATH = '/com/appmonitor/desktop/WindowInfo';
 
 const IFACE_XML = `
@@ -31,20 +36,9 @@ export default class AppMonitorWindowInfoExtension {
     enable() {
         this._dbusImpl = Gio.DBusExportedObject.wrapJSObject(IFACE_XML, this);
         this._dbusImpl.export(Gio.DBus.session, OBJECT_PATH);
-        this._busNameId = Gio.bus_own_name_on_session(
-            BUS_NAME,
-            Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT,
-            () => {},
-            () => {},
-            () => console.error('app-monitor: no se pudo adquirir el nombre D-Bus ' + BUS_NAME),
-        );
     }
 
     disable() {
-        if (this._busNameId) {
-            Gio.bus_unown_name(this._busNameId);
-            this._busNameId = 0;
-        }
         if (this._dbusImpl) {
             this._dbusImpl.unexport();
             this._dbusImpl = null;

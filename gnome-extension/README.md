@@ -31,7 +31,7 @@ gnome-extensions info app-monitor@kraso.dev
 
 ```bash
 gdbus call --session \
-  --dest com.appmonitor.desktop.WindowInfo \
+  --dest org.gnome.Shell \
   --object-path /com/appmonitor/desktop/WindowInfo \
   --method com.appmonitor.desktop.WindowInfo.GetActiveWindow
 ```
@@ -48,5 +48,5 @@ completa de Wayland conviene tener la extensión instalada.
 
 ## Compatibilidad
 
-- Probada con la API de extensiones de GNOME 45 → 48 (`Gio.DBusExportedObject`
+- Probada con la API de extensiones de GNOME 45 → 50 (`Gio.DBusExportedObject`
   + `global.display.focus_window`).
