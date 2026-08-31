@@ -24,7 +24,7 @@ Monitorización de sesiones operativa con persistencia local:
 |---|---|
 | **Windows** | Completa (ventana activa + inactividad + bloqueo/suspensión, Win32) |
 | **Linux · X11** (GNOME/KDE/otros) | Ventana activa vía EWMH (`_NET_ACTIVE_WINDOW`) + inactividad vía XScreenSaver |
-| **Linux · Wayland/GNOME** | Ventana focada vía D-Bus (`org.gnome.Shell.Introspect`, GNOME ≤ 45; en GNOME 46+ la política lo bloquea y se usa **fallback X11/XWayland**) + inactividad (`org.gnome.Mutter.IdleMonitor`) |
+| **Linux · Wayland/GNOME** | Ventana focada vía D-Bus: `org.gnome.Shell.Introspect` (GNOME ≤ 45) o **extensión propia** `app-monitor@kraso.dev` (GNOME 46+, incluida en `gnome-extension/`) + inactividad (`org.gnome.Mutter.IdleMonitor`) — **validado en vivo (GNOME 50 / Ubuntu)** |
 | **Linux · Wayland/Sway** | Ventana focada vía el IPC de sway (`get_tree`) |
 | **Linux · Wayland/KDE Plasma 6** | Ventana focada vía KWin Scripting: muestreo por recarga de `workspace.activeWindow` (`loadScript` + `start` + `unloadScript` por tick, patrón de kdotool) — **validado en vivo (Fedora 44 / Plasma 6)** |
 | **macOS** | Sin captura nativa aún (los instaladores se generan igualmente) |
@@ -36,12 +36,14 @@ Notas consabidas:
 - En entornos sin backend nativo la app funciona normal, simplemente sin datos.
 - La persistencia queda inactiva silenciosamente fuera de Tauri (p. ej. `next dev` en navegador).
 - Backend KDE: validado en vivo sobre un escritorio KDE Plasma 6 real (Fedora 44, sesión Wayland); el backend es **muestreo por recarga** y no depende de señales ni timers del scripting de KWin (ver abajo).
-- Backend GNOME (Wayland, GNOME 46+ / Ubuntu 24.04): `Introspect.GetWindows` y `Shell.Eval` están **bloqueados por política D-Bus** para apps de terceros; la app usa **fallback X11/XWayland**, así que solo monitoriza las aplicaciones XWayland (las nativas Wayland no son visibles por X11). La cobertura completa en GNOME moderno requiere una extensión de GNOME Shell (como hace ActivityWatch) — pendiente de decidir.
+- Backend GNOME (Wayland, GNOME 46+ / Ubuntu 24.04): `Introspect.GetWindows` y `Shell.Eval` están **bloqueados por política D-Bus** para apps de terceros; la solución es la **extensión propia** (`gnome-extension/`, UUID `app-monitor@kraso.dev`), que expone la ventana focada **nativa de Wayland** por D-Bus (`org.gnome.Shell` + `/com/appmonitor/desktop/WindowInfo`). Sin extensión, la app cae al **fallback X11/XWayland** (solo aplicaciones X11).
 
 ### Backend GNOME (Wayland)
 
 - **GNOME ≤ 45**: ventana focada vía `org.gnome.Shell.Introspect.GetWindows` (D-Bus de `gnome-shell`); inactividad vía `org.gnome.Mutter.IdleMonitor`.
-- **GNOME 46+ (p. ej. Ubuntu 24.04)**: `GetWindows` y `Shell.Eval` responden `AccessDenied`/bloqueados por política de privacidad (validado en vivo). La app degrada con el **fallback X11/XWayland** (EWMH `_NET_ACTIVE_WINDOW`) cuando existe `DISPLAY`: las aplicaciones XWayland quedan monitorizadas (Firefox/Chrome con X11, apps sin soporte Wayland nativo), pero las nativas Wayland no son visibles por X11. La solución completa en GNOME moderno sería una extensión de GNOME Shell que exponga la ventana focada por D-Bus (patrón de ActivityWatch).
+- **GNOME 46+ / 50 (p. ej. Ubuntu 24.04)**: `GetWindows` y `Shell.Eval` responden `AccessDenied`/bloqueados por política de privacidad (validado en vivo). La vía completa es la **extensión propia** incluida en el repo (`gnome-extension/`): exporta `global.display.focus_window` (título/clase WM/pid) en `org.gnome.Shell` y la app la consulta por D-Bus.
+  - Instalación: copia `gnome-extension/` a `~/.local/share/gnome-shell/extensions/app-monitor@kraso.dev/` (URI `app-monitor@kraso.dev`, Shell 45–50), reinicia la sesión y comprueba `gnome-extensions info app-monitor@kraso.dev` → `ACTIVE`.
+  - Sin la extensión, la app degrada al **fallback X11/XWayland** (EWMH `_NET_ACTIVE_WINDOW`): solo monitoriza aplicaciones X11/XWayland (las nativas Wayland no son visibles por X11).
 
 ### Backend KDE (Plasma 6, Wayland)
 
@@ -123,6 +125,7 @@ src-tauri/        agente nativo Rust (Tauri 2)
   src/windows.rs  backend Win32 (ventana activa, inactividad)
   src/power.rs    bloqueo/suspensión (Win32)
   src/linux.rs    backend Linux (X11 + Wayland GNOME/Sway/KDE)
+  gnome-extension/  extensión GNOME Shell (ventana activa Wayland nativa, GNOME 46+)
 ```
 
 ## Deuda conocida
@@ -130,4 +133,5 @@ src-tauri/        agente nativo Rust (Tauri 2)
 - `npm run lint`: conflicto de peer de `@typescript-eslint` con `typescript@7` (solo afecta al lint, no al build).
 - Instaladores sin firmar (requiere certificados de pago para eliminarlo).
 - Backend KDE Plasma (Wayland): validado en vivo sobre Fedora 44 / Plasma 6 (2026-08-30); la inactividad del usuario en Wayland no-GNOME sigue sin backend nativo.
+- GNOME 46+/50 sin la extensión instalada: solo cobertura X11/XWayland (la extensión `gnome-extension/` da la cobertura completa).
 - macOS: sin captura nativa de ventana activa (pendiente).
