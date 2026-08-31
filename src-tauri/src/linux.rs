@@ -267,7 +267,16 @@ mod wayland {
 
         if desktop.contains("gnome") || desktop.contains("unity") {
             dbg("wayland: compositor detectado = GNOME/Unity");
-            return gnome::active_window();
+            // 1) Introspect (GNOME ≤ 45 o distros sin bloqueo).
+            if let Some(win) = gnome::active_window() {
+                return Some(win);
+            }
+            // 2) Extensión propia (GNOME 46+): ventana focada nativa Wayland.
+            if let Some(win) = gnome_ext::active_window() {
+                return Some(win);
+            }
+            dbg("wayland: GNOME nativo y extension sin datos -> None (cae al fallback X11)");
+            return None;
         }
         if desktop.contains("sway") || std::env::var_os("SWAYSOCK").is_some() {
             dbg("wayland: compositor detectado = Sway");
@@ -746,6 +755,64 @@ try {{
                 Some(Value::I32(n)) if *n >= 0 => Some(*n as u32),
                 _ => None,
             }
+        }
+    }
+
+    /// -----------------------------------------------------------------------
+    /// GNOME: extensión propia "app-monitor@kraso.dev".
+    ///
+    /// En GNOME 46+ (Ubuntu 24.04) Introspect.GetWindows y Shell.Eval están
+    /// bloqueados por política D-Bus para apps de terceros. La extensión de
+    /// GNOME Shell (gnome-extension/ en el repo) expone la ventana focada
+    /// NATIVA de Wayland por D-Bus (org.gnome.Shell.Introspect solo ve salidas
+    /// X11/XWayland). Si la extensión no está instalada, la app cae al fallback
+    /// X11/XWayland (vía comercio) — por eso conviene instalarla para cobertura
+    /// completa en GNOME Wayland.
+    /// -----------------------------------------------------------------------
+    mod gnome_ext {
+        use super::{dbg, resolve_process, ActiveWindow};
+        use zbus::blocking::{Connection, Proxy};
+
+        /// Bus service, obdp y interfaz que exporta la extensión.
+        const BUS_NAME: &str = "com.appmonitor.desktop.WindowInfo";
+        const OBJECT_PATH: &str = "/com/appmonitor/desktop/WindowInfo";
+        const INTERFACE: &str = "com.appmonitor.desktop.WindowInfo";
+
+        pub fn active_window() -> Option<ActiveWindow> {
+            let conn = match Connection::session() {
+                Ok(c) => c,
+                Err(e) => {
+                    dbg(format!("gnome_ext: sin bus de sesion: {e}"));
+                    return None;
+                }
+            };
+            let proxy = match Proxy::new(&conn, BUS_NAME, OBJECT_PATH, INTERFACE) {
+                Ok(p) => p,
+                Err(e) => {
+                    dbg(format!("gnome_ext: proxy no disponible: {e}"));
+                    return None;
+                }
+            };
+            let result: Result<(String, String, u32), _> =
+                proxy.call("GetActiveWindow", &());
+            let (title, wm_class, pid) = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    dbg(format!(
+                        "gnome_ext: GetActiveWindow fallo (extension no instalada?): {e}"
+                    ));
+                    return None;
+                }
+            };
+            if title.is_empty() && wm_class.is_empty() && pid == 0 {
+                dbg("gnome_ext: sin ventana focada");
+                return None;
+            }
+            let process_name = resolve_process(Some(pid), Some(wm_class)).unwrap_or_default();
+            dbg(format!(
+                "gnome_ext: OK -> title={title:?} process={process_name:?}"
+            ));
+            Some(ActiveWindow { title, process_name })
         }
     }
 
